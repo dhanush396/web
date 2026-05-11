@@ -1,0 +1,1185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BAYESIAN CAPITAL — Systematic Algorithmic Trading</title>
+<meta name="description" content="Bayesian Capital: Verified 198.1% cumulative return on live EURUSD strategies. Profit Factor 1.99, 7,285+ trades, real-money MT5 account.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Bayesian Capital — Systematic Algorithmic Trading">
+<meta property="og:description" content="Verified 198.1% return. PF 1.99. 7,285+ live trades on EURUSD.">
+<meta name="twitter:card" content="summary_large_image">
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@300;400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #06070a;
+    --bg2: #0c0e14;
+    --bg3: #111420;
+    --accent: #c8fa64;
+    --accent2: #4fffb0;
+    --gold: #f0c060;
+    --text: #e8eaf0;
+    --muted: #6b7080;
+    --border: rgba(255,255,255,0.07);
+    --glow: rgba(200, 250, 100, 0.12);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    overflow-x: hidden;
+    cursor: none;
+  }
+
+  /* CUSTOM CURSOR */
+  .cursor {
+    width: 10px; height: 10px;
+    background: var(--accent);
+    border-radius: 50%;
+    position: fixed; pointer-events: none; z-index: 9999;
+    transform: translate(-50%, -50%);
+    transition: width 0.2s, height 0.2s, background 0.2s;
+  }
+  .cursor-ring {
+    width: 36px; height: 36px;
+    border: 1px solid rgba(200,250,100,0.4);
+    border-radius: 50%;
+    position: fixed; pointer-events: none; z-index: 9998;
+    transform: translate(-50%, -50%);
+    transition: all 0.12s ease;
+  }
+  body:has(a:hover) .cursor, body:has(button:hover) .cursor { width: 20px; height: 20px; }
+
+  /* NOISE TEXTURE */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none; z-index: 0; opacity: 0.5;
+  }
+
+  /* NAV */
+  nav {
+    position: fixed; top: 0; width: 100%; z-index: 100;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 24px 60px;
+    background: linear-gradient(to bottom, rgba(6,7,10,0.95), transparent);
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.3s;
+  }
+  nav.scrolled { border-color: var(--border); background: rgba(6,7,10,0.95); }
+
+  .logo {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800; font-size: 18px;
+    letter-spacing: 0.15em;
+    color: var(--text);
+    text-decoration: none;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .logo-mark {
+    width: 32px; height: 32px;
+    background: var(--accent);
+    clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .logo-mark::after {
+    content: '';
+    width: 14px; height: 14px;
+    background: var(--bg);
+    clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  }
+
+  .nav-links { display: flex; gap: 40px; list-style: none; }
+  .nav-links a {
+    color: var(--muted); text-decoration: none;
+    font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase;
+    transition: color 0.2s;
+  }
+  .nav-links a:hover { color: var(--accent); }
+
+  .nav-cta {
+    background: var(--accent); color: var(--bg);
+    border: none; padding: 10px 24px;
+    font-family: 'DM Mono', monospace;
+    font-size: 12px; font-weight: 500;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    cursor: none; transition: all 0.2s;
+    clip-path: polygon(6px 0%, 100% 0%, calc(100% - 6px) 100%, 0% 100%);
+  }
+  .nav-cta:hover { background: var(--accent2); transform: translateY(-1px); }
+
+  /* HERO */
+  .hero {
+    min-height: 100vh;
+    display: grid; grid-template-columns: 1fr 1fr;
+    align-items: center;
+    padding: 120px 60px 80px;
+    position: relative; overflow: hidden;
+  }
+
+  .hero-bg {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(ellipse 60% 60% at 80% 50%, rgba(200,250,100,0.06) 0%, transparent 70%),
+      radial-gradient(ellipse 40% 40% at 20% 80%, rgba(79,255,176,0.04) 0%, transparent 60%);
+  }
+
+  /* GRID LINES */
+  .grid-lines {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 60px 60px;
+  }
+
+  .hero-content { position: relative; z-index: 1; }
+
+  .hero-label {
+    display: inline-flex; align-items: center; gap: 10px;
+    font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 32px;
+  }
+  .hero-label::before {
+    content: '';
+    width: 40px; height: 1px; background: var(--accent);
+  }
+
+  .hero-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: clamp(52px, 5.5vw, 84px);
+    line-height: 1.0;
+    color: var(--text);
+    margin-bottom: 28px;
+    letter-spacing: -0.02em;
+  }
+  .hero-title em {
+    font-style: italic; color: var(--accent);
+  }
+
+  .hero-desc {
+    font-size: 14px; line-height: 1.8;
+    color: var(--muted); max-width: 440px;
+    margin-bottom: 48px;
+  }
+
+  .hero-actions { display: flex; gap: 16px; align-items: center; }
+
+  .btn-primary {
+    background: var(--accent); color: var(--bg);
+    border: none; padding: 16px 36px;
+    font-family: 'DM Mono', monospace;
+    font-size: 13px; font-weight: 500;
+    letter-spacing: 0.08em; cursor: none;
+    clip-path: polygon(8px 0%, 100% 0%, calc(100% - 8px) 100%, 0% 100%);
+    transition: all 0.2s;
+  }
+  .btn-primary:hover { background: var(--accent2); transform: translateY(-2px); }
+
+  .btn-ghost {
+    background: transparent; color: var(--text);
+    border: 1px solid var(--border);
+    padding: 15px 36px;
+    font-family: 'DM Mono', monospace;
+    font-size: 13px; letter-spacing: 0.08em; cursor: none;
+    transition: all 0.2s;
+  }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* LIVE CHART (right side hero) */
+  .hero-visual {
+    position: relative; z-index: 1;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 16px;
+  }
+
+  .chart-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    padding: 28px;
+    width: 100%; max-width: 520px;
+    position: relative; overflow: hidden;
+  }
+  .chart-card::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, var(--accent), transparent);
+  }
+
+  .chart-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 20px;
+  }
+  .chart-ticker {
+    font-family: 'Syne', sans-serif; font-weight: 700;
+    font-size: 15px; letter-spacing: 0.05em;
+  }
+  .chart-price {
+    font-size: 22px; font-weight: 500;
+    color: var(--accent);
+  }
+  .chart-change {
+    font-size: 12px; color: var(--accent); margin-top: 2px; text-align: right;
+  }
+
+  .chart-svg-wrap { width: 100%; height: 120px; }
+
+  .chart-svg-wrap svg { width: 100%; height: 100%; }
+
+  .chart-footer {
+    display: flex; gap: 24px; margin-top: 16px;
+    padding-top: 16px; border-top: 1px solid var(--border);
+  }
+  .chart-stat { flex: 1; }
+  .chart-stat-label { font-size: 10px; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; }
+  .chart-stat-val { font-size: 14px; color: var(--text); margin-top: 4px; }
+
+  /* METRICS ROW */
+  .metrics-row {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 0;
+    border: 1px solid var(--border);
+    max-width: 520px; width: 100%;
+  }
+  .metric-item {
+    padding: 18px 20px;
+    border-right: 1px solid var(--border);
+    animation: tick 2s ease-in-out infinite;
+  }
+  .metric-item:last-child { border-right: none; }
+  .metric-label { font-size: 9px; color: var(--muted); letter-spacing: 0.12em; text-transform: uppercase; }
+  .metric-val { font-size: 15px; color: var(--text); margin-top: 6px; font-weight: 500; }
+  .metric-val.up { color: var(--accent); }
+  .metric-val.down { color: #ff6060; }
+
+  @keyframes tick {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.85; }
+  }
+
+  /* SECTION COMMONS */
+  section { padding: 100px 60px; position: relative; }
+
+  .section-label {
+    font-size: 11px; letter-spacing: 0.25em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 16px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .section-label::before { content: '//'; color: var(--muted); }
+
+  .section-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: clamp(36px, 4vw, 60px);
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    margin-bottom: 20px;
+  }
+
+  /* DIVIDER */
+  .divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border), transparent);
+    margin: 0 60px;
+  }
+
+  /* WHAT WE DO */
+  .pillars {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 1px; background: var(--border);
+    border: 1px solid var(--border);
+    margin-top: 60px;
+  }
+  .pillar {
+    background: var(--bg);
+    padding: 48px 40px;
+    transition: background 0.3s;
+    position: relative; overflow: hidden;
+  }
+  .pillar:hover { background: var(--bg2); }
+  .pillar::after {
+    content: '';
+    position: absolute; bottom: 0; left: 0; right: 0; height: 2px;
+    background: var(--accent);
+    transform: scaleX(0); transform-origin: left;
+    transition: transform 0.4s ease;
+  }
+  .pillar:hover::after { transform: scaleX(1); }
+
+  .pillar-num {
+    font-size: 11px; color: var(--muted); letter-spacing: 0.2em;
+    margin-bottom: 28px;
+  }
+  .pillar-icon {
+    width: 48px; height: 48px;
+    margin-bottom: 24px;
+    color: var(--accent);
+  }
+  .pillar-title {
+    font-family: 'Syne', sans-serif; font-weight: 700;
+    font-size: 20px; margin-bottom: 14px;
+    letter-spacing: -0.01em;
+  }
+  .pillar-desc { font-size: 13px; color: var(--muted); line-height: 1.8; }
+
+  /* STRATEGIES */
+  .strategies-wrap {
+    display: grid; grid-template-columns: 1fr 1.4fr;
+    gap: 80px; align-items: center;
+    margin-top: 60px;
+  }
+  .strategy-list { display: flex; flex-direction: column; gap: 4px; }
+  .strategy-item {
+    padding: 20px 24px;
+    border: 1px solid transparent;
+    cursor: none; transition: all 0.25s;
+    position: relative;
+  }
+  .strategy-item:hover, .strategy-item.active {
+    border-color: var(--border);
+    background: var(--bg2);
+  }
+  .strategy-item.active::before {
+    content: '';
+    position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+    background: var(--accent);
+  }
+  .strategy-item-title {
+    font-family: 'Syne', sans-serif; font-weight: 600;
+    font-size: 15px; margin-bottom: 6px;
+  }
+  .strategy-item-tag {
+    font-size: 11px; color: var(--muted); letter-spacing: 0.1em;
+  }
+
+  .strategy-detail {
+    background: var(--bg2); border: 1px solid var(--border);
+    padding: 40px; position: relative; overflow: hidden;
+  }
+  .strategy-detail::before {
+    content: '';
+    position: absolute; top: 0; right: 0;
+    width: 200px; height: 200px;
+    background: radial-gradient(circle, rgba(200,250,100,0.07), transparent);
+    border-radius: 50%;
+  }
+
+  .strategy-detail-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: 32px; margin-bottom: 16px;
+  }
+  .strategy-detail-desc { font-size: 13px; color: var(--muted); line-height: 1.9; margin-bottom: 28px; }
+
+  .strategy-stats {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    border-top: 1px solid var(--border);
+    padding-top: 28px;
+  }
+  .s-stat-val {
+    font-family: 'DM Serif Display', serif;
+    font-size: 28px; color: var(--accent);
+  }
+  .s-stat-label { font-size: 11px; color: var(--muted); margin-top: 4px; letter-spacing: 0.1em; text-transform: uppercase; }
+
+  /* PERFORMANCE */
+  .perf-section { background: var(--bg2); }
+  .perf-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 40px; margin-top: 60px;
+  }
+  .perf-card {
+    border: 1px solid var(--border);
+    padding: 32px; background: var(--bg);
+    position: relative; overflow: hidden;
+    transition: border-color 0.3s;
+  }
+  .perf-card:hover { border-color: rgba(200,250,100,0.2); }
+  .perf-card-title {
+    font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 8px;
+  }
+  .perf-card-val {
+    font-family: 'DM Serif Display', serif;
+    font-size: 48px; color: var(--accent); line-height: 1;
+  }
+  .perf-card-sub { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .perf-bar { height: 3px; background: var(--border); margin-top: 20px; border-radius: 0; overflow: hidden; }
+  .perf-bar-fill { height: 100%; background: var(--accent); transition: width 1.5s ease; }
+
+  /* TECH STACK */
+  .tech-section { overflow: hidden; }
+  .tech-marquee-wrap { margin-top: 48px; overflow: hidden; }
+  .tech-marquee {
+    display: flex; gap: 0; width: max-content;
+    animation: marquee 28s linear infinite;
+  }
+  .tech-tag {
+    padding: 12px 28px;
+    border: 1px solid var(--border);
+    font-size: 12px; letter-spacing: 0.08em;
+    color: var(--muted); white-space: nowrap;
+    transition: color 0.2s, border-color 0.2s;
+    margin-right: -1px;
+  }
+  .tech-tag:hover { color: var(--accent); border-color: var(--accent); z-index: 1; position: relative; }
+
+  @keyframes marquee {
+    0% { transform: translateX(0); }
+    100% { transform: translateX(-50%); }
+  }
+
+  /* TEAM */
+  .team-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 24px; margin-top: 60px;
+  }
+  .team-card {
+    border: 1px solid var(--border);
+    overflow: hidden; transition: border-color 0.3s;
+  }
+  .team-card:hover { border-color: rgba(200,250,100,0.3); }
+  .team-avatar {
+    height: 180px;
+    background: var(--bg3);
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'DM Serif Display', serif;
+    font-size: 48px; color: var(--accent);
+    position: relative; overflow: hidden;
+  }
+  .team-avatar::before {
+    content: '';
+    position: absolute; inset: 0;
+    background: linear-gradient(135deg, rgba(200,250,100,0.05), transparent);
+  }
+  .team-info { padding: 20px; }
+  .team-name { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 15px; }
+  .team-role { font-size: 11px; color: var(--muted); margin-top: 4px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .team-prev { font-size: 11px; color: var(--accent); margin-top: 8px; }
+
+  /* CONTACT */
+  .contact-section {
+    background: linear-gradient(135deg, var(--bg2), var(--bg));
+    border-top: 1px solid var(--border);
+  }
+  .contact-inner {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 80px; align-items: start;
+  }
+  .contact-form { display: flex; flex-direction: column; gap: 16px; margin-top: 40px; }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .form-group { display: flex; flex-direction: column; gap: 8px; }
+  .form-label { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+  .form-input, .form-select, .form-textarea {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 14px 16px;
+    font-family: 'DM Mono', monospace;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.2s;
+    appearance: none;
+  }
+  .form-input:focus, .form-select:focus, .form-textarea:focus {
+    border-color: var(--accent);
+  }
+  .form-textarea { resize: vertical; min-height: 100px; }
+  .form-select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M0 0l6 8 6-8z' fill='%236b7080'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 16px center; }
+
+  .contact-info { margin-top: 40px; }
+  .contact-item {
+    display: flex; gap: 20px; align-items: flex-start;
+    padding: 24px 0; border-bottom: 1px solid var(--border);
+  }
+  .contact-item-icon { color: var(--accent); font-size: 18px; margin-top: 2px; }
+  .contact-item-label { font-size: 11px; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 6px; }
+  .contact-item-val { font-size: 14px; color: var(--text); }
+
+  /* FOOTER */
+  footer {
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    padding: 48px 60px;
+    display: grid; grid-template-columns: 1fr auto 1fr;
+    align-items: center; gap: 40px;
+  }
+  .footer-copy { font-size: 12px; color: var(--muted); }
+  .footer-links { display: flex; gap: 32px; justify-content: center; }
+  .footer-links a { font-size: 12px; color: var(--muted); text-decoration: none; transition: color 0.2s; }
+  .footer-links a:hover { color: var(--accent); }
+  .footer-legal { font-size: 11px; color: var(--muted); text-align: right; line-height: 1.6; }
+
+  /* SCROLL REVEAL */
+  .reveal { opacity: 0; transform: translateY(32px); transition: opacity 0.7s ease, transform 0.7s ease; }
+  .reveal.visible { opacity: 1; transform: none; }
+
+  /* TICKER TAPE */
+  .ticker {
+    background: var(--bg2);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 0; overflow: hidden;
+  }
+  .ticker-inner {
+    display: flex; gap: 0;
+    animation: marquee 20s linear infinite;
+    width: max-content;
+  }
+  .tick-item {
+    padding: 0 32px; font-size: 12px; letter-spacing: 0.08em;
+    display: flex; gap: 8px; align-items: center;
+    border-right: 1px solid var(--border);
+  }
+  .tick-sym { color: var(--text); font-weight: 500; }
+  .tick-p { color: var(--accent); }
+  .tick-ch { color: var(--muted); }
+
+  /* RESPONSIVE */
+  @media (max-width: 1024px) {
+    nav { padding: 20px 30px; }
+    .nav-links { display: none; }
+    .hero { grid-template-columns: 1fr; padding: 100px 30px 60px; }
+    .hero-visual { display: none; }
+    section { padding: 70px 30px; }
+    .pillars { grid-template-columns: 1fr; }
+    .strategies-wrap { grid-template-columns: 1fr; }
+    .perf-grid { grid-template-columns: 1fr; }
+    .team-grid { grid-template-columns: 1fr 1fr; }
+    .contact-inner { grid-template-columns: 1fr; gap: 40px; }
+    footer { grid-template-columns: 1fr; text-align: center; }
+    .footer-legal { text-align: center; }
+    .divider { margin: 0 30px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Cursor -->
+<div class="cursor" id="cursor"></div>
+<div class="cursor-ring" id="cursorRing"></div>
+
+<!-- NAV -->
+<nav id="navbar">
+  <a href="#" class="logo">
+    <div class="logo-mark"></div>
+    BAYESIAN CAPITAL
+  </a>
+  <ul class="nav-links">
+    <li><a href="#strategies">Strategies</a></li>
+    <li><a href="#performance">Performance</a></li>
+    <li><a href="#technology">Technology</a></li>
+    <li><a href="#team">Team</a></li>
+  </ul>
+  <button class="nav-cta" onclick="document.getElementById('contact').scrollIntoView({behavior:'smooth'})">Apply Now</button>
+</nav>
+
+<!-- TICKER -->
+<div class="ticker" style="margin-top:72px;">
+  <div class="ticker-inner" id="ticker">
+    <div class="tick-item"><span class="tick-sym">NIFTY 50</span><span class="tick-p">22,147.90</span><span class="tick-ch">+1.23%</span></div>
+    <div class="tick-item"><span class="tick-sym">SENSEX</span><span class="tick-p">73,158.24</span><span class="tick-ch">+0.87%</span></div>
+    <div class="tick-item"><span class="tick-sym" style="color:var(--accent)">EUR/USD</span><span class="tick-p">1.08412</span><span class="tick-ch" style="color:var(--accent)">★ Our Market</span></div>
+    <div class="tick-item"><span class="tick-sym">BTC/USD</span><span class="tick-p">84,320.00</span><span class="tick-ch">+2.41%</span></div>
+    <div class="tick-item"><span class="tick-sym">GOLD</span><span class="tick-p">3,225.40</span><span class="tick-ch">+0.32%</span></div>
+    <div class="tick-item"><span class="tick-sym">CRUDE OIL</span><span class="tick-p">83.74</span><span class="tick-ch">-0.61%</span></div>
+    <div class="tick-item"><span class="tick-sym">USD/INR</span><span class="tick-p">84.21</span><span class="tick-ch">+0.05%</span></div>
+    <div class="tick-item"><span class="tick-sym">BANK NIFTY</span><span class="tick-p">47,832.50</span><span class="tick-ch">+1.08%</span></div>
+    <div class="tick-item"><span class="tick-sym">S&P 500</span><span class="tick-p">5,282.70</span><span class="tick-ch">+0.54%</span></div>
+    <!-- duplicate for seamless loop -->
+    <div class="tick-item"><span class="tick-sym">NIFTY 50</span><span class="tick-p">22,147.90</span><span class="tick-ch">+1.23%</span></div>
+    <div class="tick-item"><span class="tick-sym">SENSEX</span><span class="tick-p">73,158.24</span><span class="tick-ch">+0.87%</span></div>
+    <div class="tick-item"><span class="tick-sym" style="color:var(--accent)">EUR/USD</span><span class="tick-p">1.08412</span><span class="tick-ch" style="color:var(--accent)">★ Our Market</span></div>
+    <div class="tick-item"><span class="tick-sym">BTC/USD</span><span class="tick-p">84,320.00</span><span class="tick-ch">+2.41%</span></div>
+    <div class="tick-item"><span class="tick-sym">GOLD</span><span class="tick-p">3,225.40</span><span class="tick-ch">+0.32%</span></div>
+    <div class="tick-item"><span class="tick-sym">CRUDE OIL</span><span class="tick-p">83.74</span><span class="tick-ch">-0.61%</span></div>
+    <div class="tick-item"><span class="tick-sym">USD/INR</span><span class="tick-p">84.21</span><span class="tick-ch">+0.05%</span></div>
+    <div class="tick-item"><span class="tick-sym">BANK NIFTY</span><span class="tick-p">47,832.50</span><span class="tick-ch">+1.08%</span></div>
+    <div class="tick-item"><span class="tick-sym">S&P 500</span><span class="tick-p">5,282.70</span><span class="tick-ch">+0.54%</span></div>
+  </div>
+</div>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-bg"></div>
+  <div class="grid-lines"></div>
+
+  <div class="hero-content">
+    <div class="hero-label">Systematic · Algorithmic · Research-Driven</div>
+    <h1 class="hero-title">
+      Quantitative<br><em>Alpha,</em> Verified.
+    </h1>
+    <p class="hero-desc">
+      Bayesian Capital deploys sophisticated quantitative strategies across global equity, derivatives, and macro markets — backed by research-driven models and real-time execution infrastructure.
+    </p>
+    <div class="hero-actions">
+      <button class="btn-primary" onclick="document.getElementById('strategies').scrollIntoView({behavior:'smooth'})">See Track Record</button>
+      <button class="btn-ghost" onclick="document.getElementById('contact').scrollIntoView({behavior:'smooth'})">Investor Enquiry</button>
+    </div>
+  </div>
+
+  <div class="hero-visual">
+    <!-- Live Chart Card -->
+    <div class="chart-card">
+      <div class="chart-header">
+        <div>
+          <div class="chart-ticker">EURUSD — LIVE STRATEGY</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">MT5 #51946597 · Vantage · Real Account</div>
+        </div>
+        <div>
+          <div class="chart-price" id="heroPrice">+198.1%</div>
+          <div class="chart-change" id="heroChange">Cumulative Return · Verified</div>
+        </div>
+      </div>
+      <div class="chart-svg-wrap">
+        <svg id="heroChart" viewBox="0 0 460 120" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="rgba(200,250,100,0.18)"/>
+              <stop offset="100%" stop-color="rgba(200,250,100,0)"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <div class="chart-footer">
+        <div class="chart-stat"><div class="chart-stat-label">Net P/L</div><div class="chart-stat-val">+$20,896</div></div>
+        <div class="chart-stat"><div class="chart-stat-label">Trades</div><div class="chart-stat-val">7,285</div></div>
+        <div class="chart-stat"><div class="chart-stat-label">Win Rate</div><div class="chart-stat-val">64.61%</div></div>
+        <div class="chart-stat"><div class="chart-stat-label">Period</div><div class="chart-stat-val">16 Months</div></div>
+      </div>
+    </div>
+
+    <div class="metrics-row">
+      <div class="metric-item"><div class="metric-label">Profit Factor</div><div class="metric-val up">1.99</div></div>
+      <div class="metric-item"><div class="metric-label">Max DD</div><div class="metric-val down">-12.76%</div></div>
+      <div class="metric-item"><div class="metric-label">Recovery</div><div class="metric-val up">7.71</div></div>
+      <div class="metric-item"><div class="metric-label">Win Rate</div><div class="metric-val up">64.61%</div></div>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- WHAT WE DO -->
+<section id="about">
+  <div class="section-label reveal">What We Do</div>
+  <h2 class="section-title reveal">Three Desks.<br>One Edge.</h2>
+
+  <div class="pillars">
+    <div class="pillar reveal">
+      <div class="pillar-num">01</div>
+      <svg class="pillar-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M6 36 L16 22 L24 28 L34 12 L42 18"/>
+        <circle cx="16" cy="22" r="2.5" fill="currentColor" stroke="none"/>
+        <circle cx="24" cy="28" r="2.5" fill="currentColor" stroke="none"/>
+        <circle cx="34" cy="12" r="2.5" fill="currentColor" stroke="none"/>
+        <path d="M6 42 h36" stroke-opacity="0.3"/>
+      </svg>
+      <div class="pillar-title">Systematic Trading</div>
+      <p class="pillar-desc">Two live automated EURUSD strategies deployed on MT5 with BayesianGrid EA v6.0. OU parameter estimation, Hurst exponent regime classification, variance ratio testing, and fractional Kelly sizing with CVaR budget constraints.</p>
+    </div>
+    <div class="pillar reveal">
+      <div class="pillar-num">02</div>
+      <svg class="pillar-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="6" y="24" width="8" height="18" rx="1"/>
+        <rect x="20" y="14" width="8" height="28" rx="1"/>
+        <rect x="34" y="6" width="8" height="36" rx="1"/>
+        <path d="M10 20 L24 10 L38 2" stroke-dasharray="3 2"/>
+      </svg>
+      <div class="pillar-title">GPU Infrastructure</div>
+      <p class="pillar-desc">GPU-accelerated backtesting on NVIDIA L40S using cuDF/cuPy. Bayesian GP optimisation with walk-forward out-of-sample validation. 10-factor ensemble signal engine with full PineScript-to-Python parity.</p>
+    </div>
+    <div class="pillar reveal">
+      <div class="pillar-num">03</div>
+      <svg class="pillar-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="24" cy="24" r="14"/>
+        <path d="M24 10 v4 M24 34 v4 M10 24 h4 M34 24 h4"/>
+        <path d="M16 16 l2.8 2.8 M29.2 29.2 l2.8 2.8 M16 32 l2.8-2.8 M29.2 18.8 l2.8-2.8"/>
+        <circle cx="24" cy="24" r="4" fill="currentColor" stroke="none" opacity="0.4"/>
+      </svg>
+      <div class="pillar-title">Quant Research</div>
+      <p class="pillar-desc">HMM + Transformer regime classifier gating live capital allocation. XGBoost/Random Forest signal filtering, LSTM sequence prediction. VPIN, OFI, and L2 microstructure features. Kelly-optimal sizing on fat-tailed distributions.</p>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- STRATEGIES -->
+<section id="strategies">
+  <div class="section-label reveal">Edge</div>
+  <h2 class="section-title reveal">Our Strategy Universe</h2>
+
+  <div class="strategies-wrap">
+    <div class="strategy-list" id="strategyList">
+      <div class="strategy-item active reveal" data-idx="0">
+        <div class="strategy-item-title">BayesianGrid v6.0</div>
+        <div class="strategy-item-tag">EURUSD · MQL5 · Live Production</div>
+      </div>
+      <div class="strategy-item reveal" data-idx="1">
+        <div class="strategy-item-title">HMM Regime Strategy</div>
+        <div class="strategy-item-tag">EURUSD · Python + MT5 · Live</div>
+      </div>
+      <div class="strategy-item reveal" data-idx="2">
+        <div class="strategy-item-title">Momentum & Factor Models</div>
+        <div class="strategy-item-tag">Equities · Multi-Factor</div>
+      </div>
+      <div class="strategy-item reveal" data-idx="3">
+        <div class="strategy-item-title">Agent Execution Framework</div>
+        <div class="strategy-item-tag">Multi-Pair · AgentScope · Expanding</div>
+      </div>
+
+    </div>
+
+    <div class="strategy-detail reveal" id="strategyDetail">
+      <div class="strategy-detail-title">BayesianGrid v6.0</div>
+      <p class="strategy-detail-desc">Flagship MQL5 Expert Advisor on EURUSD. Combines OU parameter estimation, Hurst exponent regime classification, variance ratio testing, and fractional Kelly sizing with CVaR budget constraints. Grid-based entry logic with Bayesian GP-optimised parameters and session-gated execution (London/NY).</p>
+      <div class="strategy-stats">
+        <div><div class="s-stat-val">198.1%</div><div class="s-stat-label">Cumulative Return</div></div>
+        <div><div class="s-stat-val">1.99</div><div class="s-stat-label">Profit Factor</div></div>
+        <div><div class="s-stat-val">7h 28m</div><div class="s-stat-label">Avg Hold Time</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PERFORMANCE -->
+<section id="performance" class="perf-section">
+  <div class="section-label reveal">Track Record</div>
+  <h2 class="section-title reveal">Consistent Alpha,<br>Controlled Risk.</h2>
+
+  <div class="perf-grid">
+    <div class="perf-card reveal">
+      <div class="perf-card-title">Cumulative Return</div>
+      <div class="perf-card-val">198.1%</div>
+      <div class="perf-card-sub">Time-Weighted · Dec 2024 – Apr 2026</div>
+      <div class="perf-bar"><div class="perf-bar-fill" style="width: 68%"></div></div>
+    </div>
+    <div class="perf-card reveal">
+      <div class="perf-card-title">Profit Factor</div>
+      <div class="perf-card-val">1.99</div>
+      <div class="perf-card-sub">Gross Profit $42,059 / Gross Loss $21,163</div>
+      <div class="perf-bar"><div class="perf-bar-fill" style="width: 85%"></div></div>
+    </div>
+    <div class="perf-card reveal">
+      <div class="perf-card-title">Max Drawdown</div>
+      <div class="perf-card-val" style="color:var(--gold)">-12.76%</div>
+      <div class="perf-card-sub">Peak-to-trough · Growth-based</div>
+      <div class="perf-bar"><div class="perf-bar-fill" style="width: 15%; background: var(--gold)"></div></div>
+    </div>
+    <div class="perf-card reveal">
+      <div class="perf-card-title">Recovery Factor</div>
+      <div class="perf-card-val">7.71</div>
+      <div class="perf-card-sub">Net return / max drawdown</div>
+      <div class="perf-bar"><div class="perf-bar-fill" style="width: 55%"></div></div>
+    </div>
+  </div>
+
+  <!-- Equity Curve Chart -->
+  <div style="margin-top:40px; border:1px solid var(--border); padding:32px; background:var(--bg);" class="reveal">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <div>
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:18px;">Equity Growth Curve</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px;">Account #51946597 · Real Monthly Returns · Dec 2024 – Apr 2026</div>
+      </div>
+      <div style="display:flex;gap:20px;font-size:12px;">
+        <span style="color:var(--accent)">— Real Equity Curve</span>
+        <span style="color:var(--accent)">✓ MT5 Verified</span>
+      </div>
+    </div>
+    <svg id="equityCurve" viewBox="0 0 900 200" style="width:100%;height:200px;" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="rgba(200,250,100,0.15)"/>
+          <stop offset="100%" stop-color="rgba(200,250,100,0)"/>
+        </linearGradient>
+        <linearGradient id="benchGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="rgba(107,112,128,0.08)"/>
+          <stop offset="100%" stop-color="rgba(107,112,128,0)"/>
+        </linearGradient>
+      </defs>
+    </svg>
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:8px;padding:0 4px;">
+      <span>Dec'24</span><span>Feb'25</span><span>Apr'25</span><span>Jun'25</span><span>Aug'25</span><span>Oct'25</span><span>Dec'25</span><span>Feb'26</span><span>Apr'26</span>
+    </div>
+  
+  <!-- REAL MONTHLY RETURNS TABLE -->
+  <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:28px;">
+    <thead><tr style="border-bottom:1px solid var(--border);">
+      <th style="font-size:10px;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;padding:10px 6px;text-align:left;font-weight:400;"></th>
+      <th style="font-size:10px;color:var(--muted);padding:10px 4px;text-align:center;font-weight:400;">Jan</th>
+      <th style="font-size:10px;color:var(--muted);padding:10px 4px;text-align:center;font-weight:400;">Feb</th>
+      <th style="font-size:10px;color:var(--muted);padding:10px 4px;text-align:center;font-weight:400;">Mar</th>
+      <th style="font-size:10px;color:var(--muted);padding:10px 4px;text-align:center;font-weight:400;">Apr</th>
+      <th style="font-size:10px;color:var(--muted);padding:10px 4px;text-align:center;font-weight:400;">May</th>
+      <th style="font-size:10px;color:var(--muted);padding:10px 4px;text-align:center;font-weight:400;">Jun</th>
+      <th style="font-size:10px;color:var(--muted);padding:10px 4px;text-align:center;font-weight:400;">Jul</th>
+      <th style="font-size:10px;color:var(--muted);padding:10px 4px;text-align:center;font-weight:400;">Aug</th>
+      <th style="font-size:10px;color:var(--muted);padding:10px 4px;text-align:center;font-weight:400;">Sep</th>
+      <th style="font-size:10px;color:var(--muted);padding:10px 4px;text-align:center;font-weight:400;">Oct</th>
+      <th style="font-size:10px;color:var(--muted);padding:10px 4px;text-align:center;font-weight:400;">Nov</th>
+      <th style="font-size:10px;color:var(--muted);padding:10px 4px;text-align:center;font-weight:400;">Dec</th>
+      <th style="font-size:10px;color:var(--muted);padding:10px 4px;text-align:center;font-weight:400;">Year</th>
+    </tr></thead>
+    <tbody>
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="text-align:left;color:var(--text);font-weight:500;padding:10px 6px;">2025</td>
+        <td style="text-align:center;padding:10px 4px;">—</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent)">3.03%</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent)">9.42%</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent)">13.52%</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent)">14.03%</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent)">8.05%</td>
+        <td style="text-align:center;padding:10px 4px;color:#ff6060">-15.83%</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent)">2.31%</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent)">5.62%</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent)">13.49%</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent)">4.96%</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent)">8.19%</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent);font-weight:500">84.8%</td>
+      </tr>
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="text-align:left;color:var(--text);font-weight:500;padding:10px 6px;">2026</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent)">7.30%</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent)">16.19%</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent)">23.54%</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent)">4.74%</td>
+        <td style="text-align:center;padding:10px 4px;">—</td><td style="text-align:center;padding:10px 4px;">—</td><td style="text-align:center;padding:10px 4px;">—</td><td style="text-align:center;padding:10px 4px;">—</td><td style="text-align:center;padding:10px 4px;">—</td><td style="text-align:center;padding:10px 4px;">—</td><td style="text-align:center;padding:10px 4px;">—</td><td style="text-align:center;padding:10px 4px;">—</td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent);font-weight:500">61.31%</td>
+      </tr>
+      <tr>
+        <td style="text-align:left;color:var(--accent);font-weight:500;padding:10px 6px;">Total</td>
+        <td colspan="12"></td>
+        <td style="text-align:center;padding:10px 4px;color:var(--accent);font-weight:500;font-size:14px;">198.1%</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- TECHNOLOGY -->
+<section id="technology" class="tech-section">
+  <div class="section-label reveal">Infrastructure</div>
+  <h2 class="section-title reveal">The Stack Behind<br>the Signals.</h2>
+  <p style="font-size:14px;color:var(--muted);max-width:580px;line-height:1.8;" class="reveal">
+    Every component — from signal research to live execution — is built in-house on GPU-accelerated infrastructure. Python, MQL5, and deep learning models running on NVIDIA L40S.
+  </p>
+
+  <div class="tech-marquee-wrap" style="margin-top:48px;">
+    <div class="tech-marquee">
+      <span class="tech-tag">Python</span>
+      <span class="tech-tag">MQL5 / MetaTrader 5</span>
+      <span class="tech-tag">NVIDIA L40S GPU</span>
+      <span class="tech-tag">cuDF / cuPy</span>
+      <span class="tech-tag">Bayesian GP Optimisation</span>
+      <span class="tech-tag">HMM Regime Detection</span>
+      <span class="tech-tag">Transformer Models</span>
+      <span class="tech-tag">XGBoost / Random Forest</span>
+      <span class="tech-tag">LSTM Prediction</span>
+      <span class="tech-tag">OU Process Calibration</span>
+      <span class="tech-tag">Hurst Exponent (R/S)</span>
+      <span class="tech-tag">VPIN Monitoring</span>
+      <span class="tech-tag">AgentScope Agents</span>
+      <span class="tech-tag">CVaR₉₅ Risk</span>
+      <!-- duplicate -->
+      <span class="tech-tag">Python</span>
+      <span class="tech-tag">MQL5 / MetaTrader 5</span>
+      <span class="tech-tag">NVIDIA L40S GPU</span>
+      <span class="tech-tag">cuDF / cuPy</span>
+      <span class="tech-tag">Bayesian GP Optimisation</span>
+      <span class="tech-tag">HMM Regime Detection</span>
+      <span class="tech-tag">Transformer Models</span>
+      <span class="tech-tag">XGBoost / Random Forest</span>
+      <span class="tech-tag">LSTM Prediction</span>
+      <span class="tech-tag">OU Process Calibration</span>
+      <span class="tech-tag">Hurst Exponent (R/S)</span>
+      <span class="tech-tag">VPIN Monitoring</span>
+      <span class="tech-tag">AgentScope Agents</span>
+      <span class="tech-tag">CVaR₉₅ Risk</span>
+    </div>
+  </div>
+
+  <!-- Tech pillars -->
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:48px;">
+    <div style="border:1px solid var(--border);padding:32px;" class="reveal">
+      <div style="font-size:11px;color:var(--muted);letter-spacing:0.15em;text-transform:uppercase;margin-bottom:16px;">Signal Ensemble</div>
+      <div style="font-family:'DM Serif Display',serif;font-size:40px;color:var(--accent);">10</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:8px;">Factor engine: EMA, CCI, Stochastic, ATR z-score, Rolls spread, VWAP, session vol, TOB</div>
+    </div>
+    <div style="border:1px solid var(--border);padding:32px;" class="reveal">
+      <div style="font-size:11px;color:var(--muted);letter-spacing:0.15em;text-transform:uppercase;margin-bottom:16px;">Avg Hold Time</div>
+      <div style="font-family:'DM Serif Display',serif;font-size:40px;color:var(--accent);">7h 28m</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:8px;">Session-gated execution: London and New York hours</div>
+    </div>
+    <div style="border:1px solid var(--border);padding:32px;" class="reveal">
+      <div style="font-size:11px;color:var(--muted);letter-spacing:0.15em;text-transform:uppercase;margin-bottom:16px;">Trades / Week</div>
+      <div style="font-family:'DM Serif Display',serif;font-size:40px;color:var(--accent);">121–182</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:8px;">High-frequency grid execution with automated retry and kill-switch</div>
+    </div>
+  </div>
+</section>
+
+
+
+<!-- CONTACT -->
+<section id="contact" class="contact-section">
+  <div class="contact-inner">
+    <div>
+      <div class="section-label reveal">Contact</div>
+      <h2 class="section-title reveal">Investor<br>Enquiries.</h2>
+      <p style="font-size:13px;color:var(--muted);line-height:1.9;max-width:420px;" class="reveal">
+        We're open to conversations with qualified investors, institutional partners, and exceptional quant talent. All enquiries are treated with strict confidentiality.
+      </p>
+
+      <div class="contact-info">
+        <div class="contact-item reveal">
+          <div class="contact-item-icon">◎</div>
+          <div>
+            <div class="contact-item-label">Email</div>
+            <div class="contact-item-val">capbayesian@gmail.com</div>
+          </div>
+        </div>
+        <div class="contact-item reveal">
+          <div class="contact-item-icon">◈</div>
+          <div>
+            <div class="contact-item-label">Verified Account</div>
+            <div class="contact-item-val">MT5 #51946597 · Vantage International</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="contact-form reveal">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">First Name</label>
+            <input class="form-input" type="text" placeholder="First name" name="first_name">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Last Name</label>
+            <input class="form-input" type="text" placeholder="Last name" name="last_name">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Email Address</label>
+          <input class="form-input" type="email" placeholder="you@company.com" name="email">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Enquiry Type</label>
+          <select class="form-select form-input" name="enquiry_type">
+            <option>Investor — Individual / Qualified</option>
+            <option>Investor — Institutional / Family Office</option>
+            <option>Partnership — Prop Firm / Fund</option>
+            <option>Careers — Quant / Engineer</option>
+            <option>General Enquiry</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Message</label>
+          <textarea class="form-textarea" name="message" placeholder="Tell us about your background and interest..."></textarea>
+        </div>
+        <button class="btn-primary" style="align-self:flex-start;" type="submit">Submit Enquiry</button>
+        <div id="formSuccess" style="display:none;font-size:13px;color:var(--accent);padding:12px;border:1px solid var(--accent);border-left-width:3px;">
+          ✓ Enquiry received. We'll be in touch within 48 hours.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-copy">© 2026 Bayesian Capital</div>
+  <div class="footer-links">
+    <a href="#">Privacy Policy</a>
+    <a href="#">Disclaimers</a>
+    <a href="#">Risk Disclosure</a>
+    </div>
+  <div class="footer-legal">Past performance does not guarantee future results. All trading involves risk of loss.<br>This site is for informational purposes only and does not constitute investment advice.</div>
+</footer>
+
+<script>
+  // ——— CURSOR ———
+  const cursor = document.getElementById('cursor');
+  const ring = document.getElementById('cursorRing');
+  let mx = 0, my = 0, rx = 0, ry = 0;
+  document.addEventListener('mousemove', e => { mx = e.clientX; my = e.clientY; });
+  function animCursor() {
+    cursor.style.left = mx + 'px'; cursor.style.top = my + 'px';
+    rx += (mx - rx) * 0.15; ry += (my - ry) * 0.15;
+    ring.style.left = rx + 'px'; ring.style.top = ry + 'px';
+    requestAnimationFrame(animCursor);
+  }
+  animCursor();
+
+  // ——— NAVBAR SCROLL ———
+  const navbar = document.getElementById('navbar');
+  window.addEventListener('scroll', () => {
+    navbar.classList.toggle('scrolled', window.scrollY > 60);
+  });
+
+  // ——— REVEAL ON SCROLL ———
+  const reveals = document.querySelectorAll('.reveal');
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach((e, i) => {
+      if (e.isIntersecting) {
+        setTimeout(() => e.target.classList.add('visible'), i * 60);
+      }
+    });
+  }, { threshold: 0.1 });
+  reveals.forEach(r => observer.observe(r));
+
+  // ——— HERO SPARKLINE ———
+  function makeSparkline(svgId, width, height, color, filled) {
+    const svg = document.getElementById(svgId);
+    if (!svg) return;
+    const pts = [];
+    let v = height * 0.6;
+    for (let i = 0; i <= 60; i++) {
+      v += (Math.random() - 0.46) * (height * 0.06);
+      v = Math.max(height * 0.08, Math.min(height * 0.92, v));
+      pts.push([i / 60 * width, v]);
+    }
+    // trend up
+    pts.forEach((p, i) => p[1] -= i * (height * 0.008));
+    const line = pts.map((p, i) => (i === 0 ? 'M' : 'L') + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+    const area = line + ' L' + width + ',' + height + ' L0,' + height + ' Z';
+
+    if (filled) {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', area);
+      path.setAttribute('fill', 'url(#chartGrad)');
+      svg.appendChild(path);
+    }
+    const linePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    linePath.setAttribute('d', line);
+    linePath.setAttribute('fill', 'none');
+    linePath.setAttribute('stroke', color);
+    linePath.setAttribute('stroke-width', '1.5');
+    svg.appendChild(linePath);
+    return pts;
+  }
+
+  // Real equity curve as hero sparkline
+  (function() {
+    var svg = document.getElementById('heroChart'); if (!svg) return;
+    var rets = [0, 3.03, 9.42, 13.52, 14.03, 8.05, -15.83, 2.31, 5.62, 13.49, 4.96, 8.19, 7.3, 16.19, 23.54, 4.74];
+    var eq = [100]; for (var i = 0; i < rets.length; i++) eq.push(eq[eq.length-1]*(1+rets[i]/100));
+    var maxV = Math.max.apply(null, eq), minV = Math.min.apply(null, eq);
+    var pts = eq.map(function(v, i) { return [i/(eq.length-1)*460, (1-(v-minV)/(maxV-minV))*100+10]; });
+    var line = pts.map(function(p, i) { return (i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1); }).join(' ');
+    var area = line + ' L460,120 L0,120 Z';
+    var ap = document.createElementNS('http://www.w3.org/2000/svg', 'path'); ap.setAttribute('d', area); ap.setAttribute('fill', 'url(#chartGrad)'); svg.appendChild(ap);
+    var lp = document.createElementNS('http://www.w3.org/2000/svg', 'path'); lp.setAttribute('d', line); lp.setAttribute('fill', 'none'); lp.setAttribute('stroke', '#c8fa64'); lp.setAttribute('stroke-width', '1.5'); svg.appendChild(lp);
+  })();
+
+  // ——— REAL EQUITY CURVE FROM MONTHLY RETURNS ———
+  (function() {
+    var svg = document.getElementById('equityCurve');
+    if (!svg) return;
+    var W = 900, H = 200, pad = 15;
+    // Real monthly returns from trade report
+    var rets = [0, 3.03, 9.42, 13.52, 14.03, 8.05, -15.83, 2.31, 5.62, 13.49, 4.96, 8.19, 7.3, 16.19, 23.54, 4.74];
+    var eq = [100];
+    for (var i = 0; i < rets.length; i++) eq.push(eq[eq.length-1] * (1 + rets[i]/100));
+    var maxV = Math.max.apply(null, eq), minV = Math.min.apply(null, eq);
+    var pts = eq.map(function(v, i) { return [i/(eq.length-1)*W, (1-(v-minV)/(maxV-minV))*(H-pad*2)+pad]; });
+    var line = pts.map(function(p, i) { return (i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1); }).join(' ');
+    var area = line + ' L'+W+','+H+' L0,'+H+' Z';
+    var areaEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    areaEl.setAttribute('d', area); areaEl.setAttribute('fill', 'url(#equityGrad)'); svg.appendChild(areaEl);
+    var lineEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    lineEl.setAttribute('d', line); lineEl.setAttribute('fill', 'none');
+    lineEl.setAttribute('stroke', '#c8fa64'); lineEl.setAttribute('stroke-width', '2.5'); svg.appendChild(lineEl);
+    // End dot + label
+    var last = pts[pts.length-1];
+    var dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    dot.setAttribute('cx', last[0]); dot.setAttribute('cy', last[1]); dot.setAttribute('r', '4'); dot.setAttribute('fill', '#c8fa64'); svg.appendChild(dot);
+    var lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    lbl.setAttribute('x', last[0]-10); lbl.setAttribute('y', last[1]-12); lbl.setAttribute('fill', '#c8fa64');
+    lbl.setAttribute('font-size', '12'); lbl.setAttribute('font-family', 'DM Mono, monospace'); lbl.textContent = '+198.1%'; svg.appendChild(lbl);
+  })();
+
+  // ——— STRATEGY SWITCHER ———
+  const stratData = [
+    { title: 'Statistical Arbitrage', desc: 'Flagship MQL5 Expert Advisor on EURUSD. Combines OU parameter estimation, Hurst exponent regime classification, variance ratio testing, and fractional Kelly sizing with CVaR budget constraints. Grid-based entry logic with Bayesian GP-optimised parameters and session-gated execution (London/NY).', s1: '1.99', s2: '68%', s3: '~4ms', l1: 'Profit Factor', l2: 'Win Rate', l3: 'Avg Hold Time' },
+    { title: 'HF Market Making', desc: 'We provide continuous two-sided liquidity in NIFTY and BANKNIFTY derivatives. Our models dynamically adjust spreads based on inventory risk, volatility regime, and order flow toxicity — capturing edge through volume and sophisticated risk management.', s1: '3.12', s2: '71%', s3: '<2ms', l1: 'Profit Factor', l2: 'Fill Rate', l3: 'Round Trip' },
+    { title: 'Momentum & Factor', desc: 'Multi-factor equity models spanning value, momentum, quality, and low-volatility factors. We combine traditional factor premia with proprietary sentiment and alternative data signals, rebalancing systematically across a universe of 500+ Indian equities.', s1: '1.92', s2: '62%', s3: '2–5 days', l1: 'Profit Factor', l2: 'Batting Avg', l3: 'Avg Hold' },
+    { title: 'Global Macro Systematic', desc: 'Rules-based macro strategies spanning G10 FX, global rates futures, and commodity markets. Trend-following and carry models are combined with macro regime filters to dynamically allocate capital across uncorrelated global opportunities.', s1: '1.74', s2: '58%', s3: '3–14 days', l1: 'Profit Factor', l2: 'Win Rate', l3: 'Avg Hold' },
+    { title: 'Volatility Arbitrage', desc: 'Systematic exploitation of the volatility risk premium across index and single-stock options. We trade the difference between implied and realized volatility through delta-hedged structures, maintaining gamma-neutral books with daily vega rebalancing.', s1: '2.31', s2: '65%', s3: 'Intraday', l1: 'Profit Factor', l2: 'Theta Capture', l3: 'Horizon' },
+  ];
+
+  document.getElementById('strategyList').addEventListener('click', function(e) {
+    const item = e.target.closest('.strategy-item');
+    if (!item) return;
+    document.querySelectorAll('.strategy-item').forEach(i => i.classList.remove('active'));
+    item.classList.add('active');
+    const idx = +item.dataset.idx;
+    const d = stratData[idx];
+    const det = document.getElementById('strategyDetail');
+    det.innerHTML = `
+      <div class="strategy-detail-title">${d.title}</div>
+      <p class="strategy-detail-desc">${d.desc}</p>
+      <div class="strategy-stats">
+        <div><div class="s-stat-val">${d.s1}</div><div class="s-stat-label">${d.l1}</div></div>
+        <div><div class="s-stat-val">${d.s2}</div><div class="s-stat-label">${d.l2}</div></div>
+        <div><div class="s-stat-val">${d.s3}</div><div class="s-stat-label">${d.l3}</div></div>
+      </div>`;
+  });
+
+  // Static hero — real verified data, no fake live feed
+
+  // ——— FORM SUBMIT (Formspree + mailto fallback) ———
+  document.querySelector('.contact-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var form = this;
+    var fd = new FormData(form);
+    fetch('https://formspree.io/f/YOUR_FORM_ID', {method:'POST', body:fd, headers:{'Accept':'application/json'}})
+    .then(function(r) {
+      if (r.ok) {
+        document.getElementById('formSuccess').style.display = 'block';
+        form.querySelector('button[type=submit]').style.display = 'none';
+      } else { fallbackMail(fd); }
+    }).catch(function() { fallbackMail(fd); });
+  });
+  function fallbackMail(fd) {
+    var s = encodeURIComponent('Bayesian Capital Enquiry from ' + fd.get('first_name'));
+    var b = encodeURIComponent('Name: '+fd.get('first_name')+' '+fd.get('last_name')+'\nEmail: '+fd.get('email')+'\nMessage: '+fd.get('message'));
+    window.location.href = 'mailto:capbayesian@gmail.com?subject='+s+'&body='+b;
+    document.getElementById('formSuccess').style.display = 'block';
+    document.getElementById('formSuccess').textContent = '✓ Opening your email client...';
+  }
+
+  // ——— PERF BAR ANIMATION ON SCROLL ———
+  const perfObserver = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        e.target.querySelectorAll('.perf-bar-fill').forEach(b => {
+          const w = b.style.width;
+          b.style.width = '0%';
+          setTimeout(() => b.style.width = w, 200);
+        });
+        perfObserver.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.3 });
+  document.querySelectorAll('.perf-grid').forEach(g => perfObserver.observe(g));
+
+  // ——— PAGE VISIT TRACKING ———
+  (function() {
+    var d = {page:'Bayesian Capital',time:new Date().toISOString(),ref:document.referrer||'direct'};
+    console.log('[BC] Visit:', d);
+    // SETUP: Uncomment and add your Zapier/Make webhook URL below to get notified on every page visit
+    // var WEBHOOK = 'https://hooks.zapier.com/hooks/catch/YOUR_HOOK_ID';
+    // navigator.sendBeacon(WEBHOOK, JSON.stringify(d));
+  })();
+</script>
+</body>
+</html>
