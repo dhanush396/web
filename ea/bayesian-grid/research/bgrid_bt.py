@@ -598,23 +598,8 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
         # ---- max holding time: close a side whose FIRST position is >= the hold limit old
         if hold_sec > 0:
             _time_stops(S, o[i], hs, p, ti, hold_sec)
-        # ---- v7 peak-equity kill latch: flatten and never open again
-        a_, b_ = _lin(S, hs, cs)
-        eq_now = S[BAL] + a_ * o[i] + b_
-        if eq_now > S[EQPEAK]:
-            S[EQPEAK] = eq_now
-        if p[53] > 0 and S[KILL] == 0 and eq_now <= S[EQPEAK] * (1.0 - p[53] / 100.0):
-            for sd in range(2):
-                S[STOPLOSS] += _close_side(S, sd, o[i], hs, p, ti)
-            S[KILL] = 1
-        # ---- daily loss limit: flatten and stop opening until the next server day
-        if p[44] > 0 and S[DAYHALT] == 0 and S[DAYBAL] > 0:
-            a_, b_ = _lin(S, hs, cs)
-            if S[BAL] + a_ * o[i] + b_ - S[DAYBAL] <= -p[44] / 100.0 * S[DAYBAL]:
-                for sd in range(2):
-                    S[STOPLOSS] += _close_side(S, sd, o[i], hs, p, ti)
-                S[DAYHALT] = 1
-                S[DAYSTOPS] += 1
+        # ---- v7 peak-equity kill latch + daily loss limit (also re-checked at every waypoint)
+        _acct_guards(S, o[i], hs, p, ti)
         # ---- trading session window (server minutes, may wrap midnight)
         in_sess = True
         if sess_on:
@@ -687,6 +672,8 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
                 _segment(S, wp[k], wp[k + 1], hs, p, tk, allow, allow, refcap)
             if hold_sec > 0:  # sub-minute clock: check the hold limit at every waypoint
                 _time_stops(S, wp[k + 1], hs, p, ti + wt[k + 1] * 60.0, hold_sec)
+            if p[53] > 0 or p[44] > 0:  # the EA checks these on every tick
+                _acct_guards(S, wp[k + 1], hs, p, ti + wt[k + 1] * 60.0)
         prev_c = c[i]
         prev_t = ti
     # final
@@ -715,6 +702,26 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
 @njit(cache=True)
 def len_stats():
     return 31
+
+
+@njit(cache=True)
+def _acct_guards(S, m, hs, p, t):
+    """Kill latch at PeakKillPct below the running equity peak (the same peak the DD
+    statistics use) and the daily loss limit vs the balance at the server-day start."""
+    if S[N0] + S[N1] == 0:
+        return
+    a_, b_ = _lin(S, hs, p[27])
+    eq = S[BAL] + a_ * m + b_
+    if p[53] > 0 and S[KILL] == 0 and eq <= S[PEAK] * (1.0 - p[53] / 100.0):
+        for sd in range(2):
+            S[STOPLOSS] += _close_side(S, sd, m, hs, p, t)
+        S[KILL] = 1
+        return
+    if p[44] > 0 and S[DAYHALT] == 0 and S[DAYBAL] > 0 and eq - S[DAYBAL] <= -p[44] / 100.0 * S[DAYBAL]:
+        for sd in range(2):
+            S[STOPLOSS] += _close_side(S, sd, m, hs, p, t)
+        S[DAYHALT] = 1
+        S[DAYSTOPS] += 1
 
 
 @njit(cache=True)
