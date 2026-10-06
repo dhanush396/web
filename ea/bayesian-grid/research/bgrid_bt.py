@@ -32,6 +32,9 @@ PARAM_NAMES = [
     # broker / account model
     "Balance", "Leverage", "StopOutPct", "ContractSize", "CommPerLotRT", "SwapLong", "SwapShort",
     "SlippagePts", "SpreadPts", "RolloverSpreadMult", "VolMin", "VolStep", "HedgeMarginSum", "Point",
+    # v6.14 high-frequency scalper inputs (indices 38..) + simulation controls
+    "MaxHoldMin", "EntryTFMin", "LotMultiplier", "SessStartMin", "SessEndMin", "SessCloseAtEnd",
+    "DailyLossPct", "PathPoints", "PathSeed", "UseSpreadProfile",
 ]
 PI = {n: i for i, n in enumerate(PARAM_NAMES)}
 
@@ -45,7 +48,14 @@ EA_DEFAULTS = dict(
     Balance=100.0, Leverage=500.0, StopOutPct=50.0, ContractSize=100000.0, CommPerLotRT=0.0,
     SwapLong=-7.0, SwapShort=-1.0, SlippagePts=2.0, SpreadPts=12.0, RolloverSpreadMult=4.0,
     VolMin=0.01, VolStep=0.01, HedgeMarginSum=0, Point=0.00001,
+    MaxHoldMin=0, EntryTFMin=15, LotMultiplier=0.0, SessStartMin=-1, SessEndMin=-1, SessCloseAtEnd=0,
+    DailyLossPct=0.0, PathPoints=0, PathSeed=1, UseSpreadProfile=0,
 )
+
+# EURUSD spread multiplier by SERVER hour (NY-close time): thin after rollover and late
+# Asia, tightest London/NY. Applied on top of SpreadPts when UseSpreadProfile=1.
+SPREAD_PROFILE = np.array([2.0, 1.5, 1.5, 1.3, 1.3, 1.3, 1.3, 1.2, 1.1, 1.0, 1.0, 1.0,
+                           1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.1, 1.2, 1.3, 1.5, 2.0])
 
 ORIGINAL_HOURS = "2,4,11,13,14,15,16,17,18,21,22"
 
@@ -76,13 +86,15 @@ HALT, HALT_UNTIL, PEAK, MAXDD_PCT, MAXDD_ABS, MIN_EQ = range(13, 19)
 WINS, LOSSES, BASKETS, STOPOUTS, FRICLOSE, NEWSCLOSE = range(19, 25)
 COMM, SWAP, LAYERS, MAXN, HITMAX, WORSTFLOAT, ADDBLOCK, TPPROFIT, STOPLOSS, GRIDS = range(25, 35)
 MINFREE_RATIO, SIDEWORST0, SIDEWORST1, WORSTSIDE = range(35, 39)
-NSTATE = 39
+START0, START1, DAYBAL, DAYHALT, TIMESTOPS, SESSCLOSE, DAYSTOPS, HOLDSUM, HOLDN, MAXHOLD = range(39, 49)
+NSTATE = 49
 
 STAT_NAMES = [
     "final_balance", "final_equity", "max_dd_pct", "max_dd_abs", "min_equity", "wins", "losses",
     "basket_stops", "stopouts", "friday_closes", "news_closes", "commission", "swap",
     "layers_added", "max_layers_used", "grids_hit_max", "worst_float", "adds_blocked",
     "tp_profit", "stop_losses", "grids_opened", "worst_side_float",
+    "time_stops", "session_closes", "daily_stops", "avg_hold_min", "max_hold_min",
 ]
 
 
@@ -94,6 +106,8 @@ def _lot_size(layer, p):
     every = p[3] if p[3] >= 1 else 1.0
     if layer <= flat:
         lot = base
+    elif p[40] > 0:
+        lot = base * p[40] ** (layer - flat)  # geometric: 0.01 x mult^k
     else:
         k = np.ceil((layer - flat) / every)
         lot = base + k * inc
@@ -153,9 +167,16 @@ def _track(S, m, hs, cs):
 
 
 @njit(cache=True)
-def _close_side(S, side, m, hs, p):
+def _close_side(S, side, m, hs, p, t):
     cs = p[27]
     half = p[28] * 0.5
+    n = S[N0] if side == 0 else S[N1]
+    if n > 0:
+        hold = (t - (S[START0] if side == 0 else S[START1])) / 60.0
+        S[HOLDSUM] += hold
+        S[HOLDN] += 1
+        if hold > S[MAXHOLD]:
+            S[MAXHOLD] = hold
     if side == 0:
         if S[N0] == 0:
             return 0.0
@@ -185,8 +206,13 @@ def _set_tp(S, side, p):
 
 
 @njit(cache=True)
-def _open(S, side, fill, lot, p):
+def _open(S, side, fill, lot, p, t):
     half = p[28] * 0.5
+    if (S[N0] if side == 0 else S[N1]) == 0:
+        if side == 0:
+            S[START0] = t
+        else:
+            S[START1] = t
     S[BAL] -= half * lot
     S[COMM] += half * lot
     if side == 0:
@@ -218,7 +244,7 @@ def _try_add(S, side, m, hs, p, t):
         return False
     slip = p[31] * p[37]
     fill = (m + hs + slip) if side == 0 else (m - hs - slip)
-    _open(S, side, fill, lot, p)
+    _open(S, side, fill, lot, p, t)
     S[LAYERS] += 1
     _set_tp(S, side, p)
     return True
@@ -227,7 +253,7 @@ def _try_add(S, side, m, hs, p, t):
 @njit(cache=True)
 def _loss_close(S, m, hs, p, t, is_stopout):
     for sd in range(2):
-        pnl = _close_side(S, sd, m, hs, p)
+        pnl = _close_side(S, sd, m, hs, p, t)
         S[STOPLOSS] += pnl
     if is_stopout:
         S[STOPOUTS] += 1
@@ -331,7 +357,7 @@ def _segment(S, a, bnd, hs, p, t, allow0, allow1, refcap):
                     ok1 = False
         elif ev == 2:
             side = 1 if down else 0
-            pnl = _close_side(S, side, cur, hs, p)
+            pnl = _close_side(S, side, cur, hs, p, t)
             S[TPPROFIT] += pnl
             if pnl > 0:
                 S[WINS] += 1
@@ -350,14 +376,14 @@ def _jump(S, m, hs, p, t, allow0, allow1, refcap):
     cs = p[27]
     step = p[4] * p[37]
     if S[N0] > 0 and m - hs >= S[TP0] - 1e-9:
-        pnl = _close_side(S, 0, m, hs, p)
+        pnl = _close_side(S, 0, m, hs, p, t)
         S[TPPROFIT] += pnl
         if pnl > 0:
             S[WINS] += 1
         else:
             S[LOSSES] += 1
     if S[N1] > 0 and m + hs <= S[TP1] + 1e-9:
-        pnl = _close_side(S, 1, m, hs, p)
+        pnl = _close_side(S, 1, m, hs, p, t)
         S[TPPROFIT] += pnl
         if pnl > 0:
             S[WINS] += 1
@@ -402,13 +428,22 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily):
         before = p[23] * 60.0  # same as EA: never re-open between pre-close and the event
     after = p[20] * 60.0
     close_before = p[23] * 60.0
-    wp = np.zeros(4)
+    npts = int(min(max(p[45], 0), 10))
+    wp = np.zeros(4 + 3 * npts)
+    if npts > 0:
+        np.random.seed(int(p[46]))
+    tf_sec = max(p[39], 1.0) * 60.0
+    hold_sec = p[38] * 60.0
+    sess_on = p[41] >= 0 and p[42] >= 0 and p[41] != p[42]
+    S[DAYBAL] = p[24]
     for i in range(n):
         ti = t[i]
         mod = (ti % 86400) // 60
         spr_pts = p[32]
+        if p[47] > 0:
+            spr_pts = spr_pts * SPREAD_PROFILE[int(mod // 60)]
         if mod >= 1435 or mod < 15:
-            spr_pts = p[32] * p[33]
+            spr_pts = spr_pts * p[33]
         hs = spr_pts * point * 0.5
         day = ti // 86400
         refcap = p[12] if p[12] > 0 else (S[BAL] if p[12] < 0 else p[24])
@@ -432,6 +467,8 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily):
                         sw = p[30] * S[L1] * mult
                         S[SW1] += sw; S[SWAP] += sw
             last_day = day
+            S[DAYBAL] = S[BAL]
+            S[DAYHALT] = 0
         dow = (day + 4) % 7
         hour = int(mod // 60)
         # ---- halt cooldown
@@ -459,23 +496,49 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily):
         if p[14] > 0 and dow == 5 and hour >= p[15]:
             if S[N0] + S[N1] > 0:
                 for sd in range(2):
-                    S[STOPLOSS] += _close_side(S, sd, o[i], hs, p)
+                    S[STOPLOSS] += _close_side(S, sd, o[i], hs, p, ti)
                 S[FRICLOSE] += 1
             prev_c = c[i]
             prev_t = ti
             continue
+        # ---- max holding time: close a side whose FIRST position is >= MaxHoldMin old
+        if hold_sec > 0:
+            for sd in range(2):
+                if (S[N0] if sd == 0 else S[N1]) > 0:
+                    if ti - (S[START0] if sd == 0 else S[START1]) >= hold_sec:
+                        S[STOPLOSS] += _close_side(S, sd, o[i], hs, p, ti)
+                        S[TIMESTOPS] += 1
+        # ---- daily loss limit: flatten and stop opening until the next server day
+        if p[44] > 0 and S[DAYHALT] == 0 and S[DAYBAL] > 0:
+            a_, b_ = _lin(S, hs, cs)
+            if S[BAL] + a_ * o[i] + b_ - S[DAYBAL] <= -p[44] / 100.0 * S[DAYBAL]:
+                for sd in range(2):
+                    S[STOPLOSS] += _close_side(S, sd, o[i], hs, p, ti)
+                S[DAYHALT] = 1
+                S[DAYSTOPS] += 1
+        # ---- trading session window (server minutes, may wrap midnight)
+        in_sess = True
+        if sess_on:
+            if p[41] < p[42]:
+                in_sess = mod >= p[41] and mod < p[42]
+            else:
+                in_sess = mod >= p[41] or mod < p[42]
+            if not in_sess and p[43] > 0 and S[N0] + S[N1] > 0:
+                for sd in range(2):
+                    S[STOPLOSS] += _close_side(S, sd, o[i], hs, p, ti)
+                S[SESSCLOSE] += 1
         # ---- news pre-close
         if pre_news and S[N0] + S[N1] > 0:
             closed = False
             for sd in range(2):
                 if p[22] >= 2 or _side_float(S, sd, o[i], hs, cs) >= 0:
                     if (S[N0] if sd == 0 else S[N1]) > 0:
-                        S[STOPLOSS] += _close_side(S, sd, o[i], hs, p)
+                        S[STOPLOSS] += _close_side(S, sd, o[i], hs, p, ti)
                         closed = True
             if closed:
                 S[NEWSCLOSE] += 1
-        # ---- new M15 bar: open idle grids
-        m15 = ti // 900
+        # ---- new entry-timeframe bar (M15 in v6.12; M1/M5 for the scalper): open idle grids
+        m15 = ti // tf_sec
         if m15 != last_m15:
             last_m15 = m15
             if S[N0] == 0 or S[N1] == 0:
@@ -495,26 +558,22 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily):
                 dd_ok = p[10] <= 0 or gdd < p[10]
                 spread_ok = p[9] <= 0 or spr_pts <= p[9]
                 news_ok = not in_news
-                if time_ok and margin_ok and dd_ok and S[HALT] == 0 and spread_ok and news_ok:
+                if (time_ok and margin_ok and dd_ok and S[HALT] == 0 and spread_ok and news_ok
+                        and in_sess and S[DAYHALT] == 0):
                     tpd = p[5] * 10.0 * point
                     if S[N0] == 0 and S[L0] + S[L1] + lot1 <= p[7] + 1e-9:
                         px = o[i] + hs
-                        _open(S, 0, px, lot1, p)
+                        _open(S, 0, px, lot1, p, ti)
                         S[TP0] = np.round((px + tpd) / point) * point
                         S[GRIDS] += 1
                     if S[N1] == 0 and S[L0] + S[L1] + lot1 <= p[7] + 1e-9:
                         px = o[i] - hs
-                        _open(S, 1, px, lot1, p)
+                        _open(S, 1, px, lot1, p, ti)
                         S[TP1] = np.round((px - tpd) / point) * point
                         S[GRIDS] += 1
         # ---- intra-bar path
-        wp[0] = o[i]
-        if c[i] >= o[i]:
-            wp[1] = l[i]; wp[2] = h[i]
-        else:
-            wp[1] = h[i]; wp[2] = l[i]
-        wp[3] = c[i]
-        for k in range(3):
+        nwp = _build_path(wp, o[i], h[i], l[i], c[i], npts)
+        for k in range(nwp - 1):
             if wp[k + 1] != wp[k]:
                 _segment(S, wp[k], wp[k + 1], hs, p, ti, allow, allow, refcap)
         prev_c = c[i]
@@ -534,12 +593,64 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily):
     out[12] = S[SWAP]; out[13] = S[LAYERS]; out[14] = S[MAXN]; out[15] = S[HITMAX]
     out[16] = S[WORSTFLOAT]; out[17] = S[ADDBLOCK]; out[18] = S[TPPROFIT]; out[19] = S[STOPLOSS]
     out[20] = S[GRIDS]; out[21] = S[WORSTSIDE]
+    out[22] = S[TIMESTOPS]; out[23] = S[SESSCLOSE]; out[24] = S[DAYSTOPS]
+    out[25] = S[HOLDSUM] / S[HOLDN] if S[HOLDN] > 0 else 0.0
+    out[26] = S[MAXHOLD]
     return out, d_eq, d_bal
 
 
 @njit(cache=True)
 def len_stats():
-    return 22
+    return 27
+
+
+@njit(cache=True)
+def _build_path(wp, o, h, l, c, npts):
+    """Waypoints of the price path inside one M1 bar.
+
+    npts == 0: deterministic O->L->H->C (bull bar) / O->H->L->C (bear bar), the
+    MT5 "1 minute OHLC" convention. npts > 0: the high/low order is a coin flip
+    and each leg gets npts Brownian-bridge points clipped to [low, high], so a
+    1-3 pip bar can cross a 1-pip TP or grid level several times, as ticks do.
+    """
+    if npts == 0:
+        wp[0] = o
+        if c >= o:
+            wp[1] = l; wp[2] = h
+        else:
+            wp[1] = h; wp[2] = l
+        wp[3] = c
+        return 4
+    rng = h - l
+    hi_first = np.random.random() < 0.5
+    t1 = np.random.uniform(0.05, 0.6)
+    t2 = np.random.uniform(t1 + 0.05, 0.95)
+    av0 = o
+    av1 = h if hi_first else l
+    av2 = l if hi_first else h
+    av3 = c
+    k = 0
+    for g in range(3):
+        if g == 0:
+            a, b, ta, tb = av0, av1, 0.0, t1
+        elif g == 1:
+            a, b, ta, tb = av1, av2, t1, t2
+        else:
+            a, b, ta, tb = av2, av3, t2, 1.0
+        wp[k] = a
+        k += 1
+        sig = 0.5 * rng * np.sqrt(tb - ta)
+        for j in range(npts):
+            sfrac = (j + 1.0) / (npts + 1.0)
+            v = a + (b - a) * sfrac + sig * np.sqrt(sfrac * (1.0 - sfrac)) * np.random.normal()
+            if v > h:
+                v = h
+            if v < l:
+                v = l
+            wp[k] = v
+            k += 1
+    wp[k] = c
+    return k + 1
 
 
 # ---------------------------------------------------------------- python API
