@@ -1,0 +1,6 @@
+case,final_usd,cagr,max_dd,killed,trades_day,commission
+1. zero cost + 4-point OHLC bars (optimistic tester),49156.96,245.6,1.2,0,2537.0,0.0
+2. zero cost + random intrabar path,95.45,-0.9,25.0,1,79.0,0.0
+"3. zero cost + random path, seed 2",104.16,0.8,25.0,1,78.0,0.0
+4. raw costs + 4-point OHLC bars,77.86,-4.9,25.1,1,0.0,21.0
+5. raw costs + random intrabar path (realistic),75.46,-5.5,25.2,1,0.0,18.9
