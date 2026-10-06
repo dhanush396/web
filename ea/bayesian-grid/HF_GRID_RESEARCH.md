@@ -110,3 +110,50 @@ So **no grid geometry, ladder or exit rule can make a 1–30 minute EURUSD grid 
 3. **Re-run Step 0 on your broker's real bid/ask ticks for 2020–2026** (MT5 → Symbols → Ticks → Export). Mid-price Oanda data can't settle whether your broker's late-NY and Asia spreads leave anything.
 
 Until Step 0 passes on some instrument and cost structure, the research says the answer is "do not trade it for profit".
+
+## 5. v7 built and tested (your choice: build it and test other markets)
+
+### What was built
+
+- **EA v7.00** keeps your core (dual magic grids, live weighted-average TP) and adds the research modules. All are **off by default**:
+
+  | Input(s) | What it does |
+  |---|---|
+  | `EntryTF` | M1/M5 entries |
+  | `EntryMode=STRETCH` | Opens only the reversion side after a stretch + reclaim, with a trend veto |
+  | `MaxHoldSec` | Closes a grid on the age of its oldest position, ms precision |
+  | `StopPips` | Basket stop anchored to layer 1, plus a broker-side SL |
+  | `MaxBasketRiskPct` | Pre-trade ladder fit to an equity budget |
+  | `AddMinSec`, `NoAddAfterSec` | Add pacing and a no-add cutoff |
+  | `MaxSpreadPts` | Spread guard, now on adds too |
+  | `DailyLossPct` | Daily loss limit |
+  | `PeakKillPct` | Persisted kill latch |
+  | `SessionStart`/`SessionEnd` | Session window, with optional close at session end |
+  | `LotMultiplier` | Geometric lot ladder |
+
+  It also fixes `SetTP` wiping the SL.
+- **The simulator mirrors every module.** It has second-level holding, randomised Brownian-bridge intrabar paths, and per-waypoint kill/daily checks; 16 tests pass.
+- **`research/mt5_import.py`** loads MT5 bar or tick exports with the broker's own spread. That is the route to XAUUSD and indices: only EURUSD data exists in this environment.
+
+### Results (`research/optimize_hf.py`, $100 standard account, start lot 0.01)
+
+- **In-sample search:** 800 Bayesian (TPE) trials on 2012–2016 with raw-ECN costs (0.2-pip spread + $7/lot + slippage) and randomised intrabar paths.
+  - **No configuration that trades at least 50 times a year is profitable.** The best is −1.4%/yr at 15–17% max DD.
+  - The optimiser escaped by trading less, not more: late-NY stretch entries, 7.5–10 pip TP, 10-minute holds, about 0.2 trades a day.
+- **Holdout:** 2017–2020.05, opened once for 5 frozen configs. All of them lose 2.2–2.5%/yr ($100 → ~$92).
+- **Robustness:** path seeds, the OHLC path, spread ×1.5, slippage ×2 and commission $10 all leave the conclusion unchanged.
+
+### Why HF-grid backtests elsewhere look spectacular
+
+The same search under optimistic tester assumptions (no spread, commission or slippage; 4-point OHLC bars) finds the configuration below:
+
+| Same config, 2012–2016 | $100 becomes | CAGR | Max DD |
+|---|---|---|---|
+| Zero cost + 4-point OHLC bars | **$49,157** | **+245.6%** | 1.2% |
+| Zero cost + random intrabar path | $95 | −0.9% | 25% (kill) |
+| Raw costs + 4-point OHLC bars | $78 | −4.9% | 25% (kill) |
+| **Raw costs + random path (realistic)** | **$75** | **−5.5%** | 25% (kill) |
+
+The +245% is entirely an artifact. A 30-second time stop on a fixed O→L→H→C bar path always exits on the bar's high or low, and no costs are charged. Remove the path artifact and even a zero-cost run is a coin flip; add real costs and it loses.
+
+**This is how MT5 "1 minute OHLC" or "Open prices" tests and zero-spread settings produce the HF-grid equity curves sold on marketplaces.** Always judge an HF EA in the MT5 tester with *"Every tick based on real ticks"*, your broker's spread and commission, and *Random delay*.
