@@ -1,0 +1,333 @@
+[full page via WebFetch] https://github.com/elrizwiraswara/nyao_scalper_mt5
+[full page via WebFetch] https://github.com/enarjord/passivbot
+[full page via WebFetch] https://github.com/enarjord/passivbot/blob/master/docs/adaptive_entry_cooldown.md
+[full page via WebFetch] https://github.com/enarjord/passivbot/blob/master/docs/configuration.md
+[full page via WebFetch] https://github.com/enarjord/passivbot/blob/master/docs/equity_hard_stop_loss.md
+[full page via WebFetch] https://github.com/enarjord/passivbot/blob/master/docs/equity_hard_stop_loss_risks.md
+[full page via WebFetch] https://github.com/enarjord/passivbot/blob/master/docs/risk_management.md
+[full page via WebFetch] https://github.com/enarjord/passivbot/tree/master/docs
+[full page via WebFetch] https://github.com/freqtrade/freqtrade/blob/develop/docs/configuration.md
+[full page via WebFetch] https://github.com/freqtrade/freqtrade/blob/develop/docs/includes/protections.md
+[full page via WebFetch] https://github.com/freqtrade/freqtrade/blob/develop/docs/strategy-callbacks.md
+[full page via WebFetch] https://github.com/geraked/metatrader5
+[full page via WebFetch] https://github.com/hummingbot/hummingbot/blob/master/hummingbot/strategy/avellaneda_market_making/avellaneda_market_making.pyx
+[full page via WebFetch] https://github.com/hummingbot/hummingbot/blob/master/hummingbot/strategy/avellaneda_market_making/avellaneda_market_making_config_map_pydantic.py
+[full page via WebFetch] https://github.com/hummingbot/hummingbot/blob/master/hummingbot/strategy/pure_market_making/inventory_skew_calculator.pyx
+[full page via WebFetch] https://github.com/hummingbot/hummingbot/blob/master/hummingbot/strategy/pure_market_making/pure_market_making_config_map.py
+[full page via WebFetch] https://github.com/sajidmahamud835/grid-master-pro-mt5-ea
+[search-result summary only; direct fetch egress-blocked] https://www.forexfactory.com/thread/480774-can-a-grid-trader-survive?page=2
+[search-result summary only] https://apptrading.ai/en/blog/best-1-minute-forex-scalping-strategy-for-beginners/
+[search-result summary only] https://chartsnipe.com/blog/scalping-strategy-forex-setups
+[search-result summary only] https://doi.org/10.3390/a19060442
+[search-result summary only] https://eatested.com/installing-expert-advisors/risks-of-using-grid-expert-advisors/
+[search-result summary only] https://elitecurrensea.com/education/automated-grid-bots/
+[search-result summary only] https://forexbenchmark.com/eas/reviews/sfe-night-scalper/
+[search-result summary only] https://forexrobotnation.com/robot-review-night-owl-ea/
+[search-result summary only] https://get.exness.help/hc/en-us/articles/17537782786588-Standard-Cent-account
+[search-result summary only] https://medium.com/coinmonks/grid-bots-how-they-really-work-how-to-make-money-with-them-948b4439fa5f
+[search-result summary only] https://newyorkcityservers.com/blog/asian-session-forex-strategy
+[search-result summary only] https://newyorkcityservers.com/blog/grid-trading-forex
+[search-result summary only] https://newyorkcityservers.com/blog/night-hunter-pro-review
+[search-result summary only] https://newyorkcityservers.com/blog/waka-waka-ea-review
+[search-result summary only] https://quantmonitor.net/how-to-identify-market-regimes-and-filter-strategies-by-trend-and-volatility/
+[search-result summary only] https://tradersunion.com/interesting-articles/forex-ea/waka-waka-ea-review/
+[search-result summary only] https://www.babypips.com/news/forex-chf-review-2015
+[search-result summary only] https://www.forexbrokerz.com/news/forex-review-ilan-ea-popular-martingale-russia
+[search-result summary only] https://www.forexfactory.com/thread/1028596-how-to-consistently-profit-with-grid-ea
+[search-result summary only] https://www.forexfactory.com/thread/1070898-free-grid-ea-ikarus-from-zero-to?page=113
+[search-result summary only] https://www.forexfactory.com/thread/1147554-for-swbgrid-supertrend-ea-improvement
+[search-result summary only] https://www.forexfactory.com/thread/521848-the-chf-tsunami-15-january-2015
+[search-result summary only] https://www.forexfactory.com/thread/530555-fxcm-releases-detailed-data-on-the-snb-flash
+[search-result summary only] https://www.forexfactory.com/thread/682126-flexy-grid-ea-grid-trading?page=62
+[search-result summary only] https://www.forexfactory.com/thread/792598-most-famous-blessing-396-ea-and-setfiles?page=132
+[search-result summary only] https://www.goldbuytrader.com/2025/10/cent-account-burn-in.html
+[search-result summary only] https://www.jptradingcapital.com/blog/en/grid-ea-prop-firm
+[search-result summary only] https://www.litefinance.org/blog/for-professionals/ilan-trading-system-description-advantages-and-drawbacks/
+[search-result summary only] https://www.mdpi.com/1999-4893/19/6/442
+[search-result summary only] https://www.mql5.com/en/articles/21833
+[search-result summary only] https://www.mql5.com/en/blogs/post/768763
+[search-result summary only] https://www.mql5.com/en/blogs/post/769397
+[search-result summary only] https://www.mql5.com/en/code/70764
+[search-result summary only] https://www.mql5.com/en/forum/182144
+[search-result summary only] https://www.mql5.com/en/forum/192936
+[search-result summary only] https://www.mql5.com/en/forum/351989
+[search-result summary only] https://www.mql5.com/en/forum/376285
+[search-result summary only] https://www.mql5.com/en/market/product/133466
+[search-result summary only] https://www.mql5.com/en/market/product/53009
+[search-result summary only] https://www.myfxbook.com/community/trading-systems/waka-waka-ea/2752729,2
+[search-result summary only] https://www.researchgate.net/publication/343655940_Gambler's_ruin_problem_and_bi-directional_grid_constrained_trading_and_investment_strategies
+[search-result summary only] https://www.researchgate.net/publication/344238885_Drawdown_and_Drawup_of_Bi-Directional_Grid_Constrained_Stochastic_Processes
+http://taltoncm.blogspot.com/2017/10/the-kelly-criterion-and-option-trading.html (search summary only)
+http://www.nber.org/papers/w15205.pdf (search summary only)
+https://arxiv.org/abs/1105.3115 (search summary only)
+https://arxiv.org/abs/1411.5062 (search summary only)
+https://arxiv.org/abs/1707.03498 (search summary only)
+https://arxiv.org/abs/2501.16772 (search summary only)
+https://arxiv.org/abs/2506.11921 (search summary only)
+https://arxiv.org/html/2606.01477v1 (search summary only)
+https://arxiv.org/pdf/2003.10502 (search summary only)
+https://dspace.mit.edu/bitstream/handle/1721.1/114876/Lo_When%20Do%20Stop-Loss.pdf (search summary only)
+https://en.wikipedia.org/wiki/Kelly_criterion (search summary only)
+https://en.wikipedia.org/wiki/Martingale_(betting_system) (search summary only)
+https://finance.martinsewell.com/stylized-facts/dependence/ (search summary only)
+https://gist.github.com/sebjai/c6ff3850dea37d28d3fa7d3aef59722b (fetched; notebook did not render, title only)
+https://github.com/51bitquant/binance_grid_trader
+https://github.com/AlessandroGCodeca/arbitrage-grid-bot
+https://github.com/BlamzKunG/XAUUSD-Grid-EA
+https://github.com/CloudWingsBD/AS_Model
+https://github.com/DogsTailFarmer/martin-binance
+https://github.com/DogsTailFarmer/martin-binance/wiki/Trade-idea
+https://github.com/OrchardForexTutorials/220403_stop_loss_grid
+https://github.com/OrchardForexTutorials/220403_stop_loss_grid/tree/main/Experts/Orchard/Stop%20Loss%20Grid
+https://github.com/OrchardForexTutorials/251003_expanding_grid
+https://github.com/QuantiaAI/grid-pilot
+https://github.com/Seb-L-P/avellaneda-stoikov-market-maker
+https://github.com/Xtley001/High-Frequency-Grid-EA
+https://github.com/adamjbradley/MintyGrid
+https://github.com/adamjbradley/MintyGrid/tree/main
+https://github.com/btschwertfeger/infinity-grid
+https://github.com/colachenkc/Dynamic-Grid-Trading
+https://github.com/haohaoi34/nexus-trade-bot
+https://github.com/hudson-and-thames/arbitragelab/blob/master/docs/source/optimal_mean_reversion/heat_potentials.rst
+https://github.com/hudson-and-thames/arbitragelab/tree/master/docs/source/optimal_mean_reversion
+https://github.com/hudson-and-thames/arbitragelab/tree/master/docs/source/time_series_approach
+https://github.com/iqueipopg/market-making
+https://github.com/jordantete/grid_trading_bot
+https://github.com/jumpycalm/jumpycalm-cBot-Grid-V3
+https://github.com/nkaz001/hftbacktest/tree/master/docs/tutorials
+https://github.com/nkaz001/hftbacktest/tree/master/examples
+https://github.com/potekhinskill/Ladder-Dragon
+https://github.com/princeniu/AS-Grid
+https://github.com/punlie/PunlieGridEA_v3
+https://github.com/sajidmahamud835/grid-master-pro-mt5-ea
+https://github.com/sonidelav/GridEA
+https://github.com/sournk/Springfield-3Grids-MT5-Bot
+https://grokipedia.com/page/GuantLehalleFernandez-Tapia_model (search summary only)
+https://gwern.net/doc/statistics/decision/2006-thorp.pdf (search summary only)
+https://ideas.repec.org/a/eee/finmar/v9y2006i3p223-245.html (search summary only)
+https://ideas.repec.org/a/tpr/jeurec/v6y2008i2-3p589-596.html (search summary only)
+https://ideas.repec.org/a/vrs/foeste/v14y2014i2p152-162n14.html (search summary only)
+https://ideas.repec.org/p/snb/snbwpa/2011-04.html (search summary only)
+https://medium.com/hummingbot/a-comprehensive-guide-to-avellaneda-stoikovs-market-making-strategy-102d64bf5df6 (search summary only)
+https://mpra.ub.uni-muenchen.de/58151/7/MPRA_paper_58151.pdf (search summary only)
+https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1467-9965.1993.tb00044.x (search summary only)
+https://onlinelibrary.wiley.com/doi/full/10.1111/jofi.13306 (search summary only)
+https://ora.ox.ac.uk/objects/uuid:c2ba6656-8eab-4b2e-a24a-e9e842d1378f/files/s41687h481 (search summary only)
+https://oxford-man.ox.ac.uk/wp-content/uploads/2020/05/Algorithmic-Trading-Stochastic-Control-and-Mutually-Exciting-Processes.pdf (search summary only)
+https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1505073 (search summary only)
+https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2010417 (search summary only)
+https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4678427 (search summary only)
+https://papers.ssrn.com/sol3/papers.cfm?abstract_id=991775 (search summary only)
+https://people.duke.edu/~charvey/Research/Published_Papers/P135_The_impact_of.pdf (search summary only)
+https://people.orie.cornell.edu/sfs33/LimitOrderBook.pdf (search summary only)
+https://public.econ.duke.edu/~boller/Published_Papers/jf_98.pdf (search summary only)
+https://pypi.org/project/hurst/
+https://quantpedia.com/whats-the-relation-between-grid-trading-and-delta-hedging/ (search summary only)
+https://raw.githubusercontent.com/Anaji00/sentinel/main/shared/utils/quant_calc.py
+https://raw.githubusercontent.com/ArtemVeremienko/mt5kit/main/spread_analyzer/README.md
+https://raw.githubusercontent.com/BlamzKunG/My-Expert-Advisor/main/Experts/Zerith_Gold_Adaptive_MeanReversion_EA.mq5
+https://raw.githubusercontent.com/CSchoel/nolds/master/nolds/measures.py
+https://raw.githubusercontent.com/DogsTailFarmer/martin-binance/master/martin_binance/executor.py
+https://raw.githubusercontent.com/DogsTailFarmer/martin-binance/master/martin_binance/templates/cli_1_BTCUSDT.py
+https://raw.githubusercontent.com/Drakkar-Software/OctoBot-Tentacles/master/Trading/Mode/grid_trading_mode/resources/GridTradingMode.md
+https://raw.githubusercontent.com/Drakkar-Software/OctoBot-Tentacles/master/Trading/Mode/staggered_orders_trading_mode/resources/StaggeredOrdersTradingMode.md
+https://raw.githubusercontent.com/H4RTBrothers/Advisory-Source-Code/main/303.Ilan1.4.mq4
+https://raw.githubusercontent.com/JCAMPanero23/JcampForexTrader/main/Documentation/SPREAD_VS_COMMISSION_BROKER_ANALYSIS.md
+https://raw.githubusercontent.com/Jeangowhy/opendocs/main/forex.md
+https://raw.githubusercontent.com/MerlinR/Pandas-ta-fork/main/pandas_ta/momentum/er.py
+https://raw.githubusercontent.com/MerlinR/Pandas-ta-fork/main/pandas_ta/momentum/squeeze.py
+https://raw.githubusercontent.com/MerlinR/Pandas-ta-fork/main/pandas_ta/trend/adx.py
+https://raw.githubusercontent.com/MerlinR/Pandas-ta-fork/main/pandas_ta/trend/chop.py
+https://raw.githubusercontent.com/Mottl/hurst/master/README.md
+https://raw.githubusercontent.com/OrchardForexTutorials/220403_stop_loss_grid/main/Experts/Orchard/Stop%20Loss%20Grid/Expert.mqh
+https://raw.githubusercontent.com/OrchardForexTutorials/220403_stop_loss_grid/main/Experts/Orchard/Stop%20Loss%20Grid/Stop%20Loss%20Grid.mqh
+https://raw.githubusercontent.com/SadraShameli/sadra.nl/main/.claude/prop-firms/fundednext/trading-rules.md
+https://raw.githubusercontent.com/ThomasPraun/mql-developer/main/references/backtesting.md
+https://raw.githubusercontent.com/Xtley001/High-Frequency-Grid-EA/main/High-Frequency%20Grid%20EA.mq5
+https://raw.githubusercontent.com/ahmetcanunaldi/mt5-automate-trading/master/EXPERIMENTS.md
+https://raw.githubusercontent.com/anas1412/orb-mt5/main/README.md
+https://raw.githubusercontent.com/bashtage/arch/main/arch/unitroot/unitroot.py
+https://raw.githubusercontent.com/colachenkc/Dynamic-Grid-Trading/main/README.md
+https://raw.githubusercontent.com/ebadiamirhossein/sentinel/main/journal/M10b_SPIKE.md
+https://raw.githubusercontent.com/elrizwiraswara/nyao_scalper_mt5/main/README.md
+https://raw.githubusercontent.com/enarjord/passivbot/master/docs/configuration.md
+https://raw.githubusercontent.com/enarjord/passivbot/master/docs/risk_management.md
+https://raw.githubusercontent.com/freqtrade/freqtrade/develop/docs/backtesting.md
+https://raw.githubusercontent.com/freqtrade/freqtrade/develop/docs/includes/protections.md
+https://raw.githubusercontent.com/freqtrade/freqtrade/develop/docs/stoploss.md
+https://raw.githubusercontent.com/freqtrade/freqtrade/develop/docs/strategy-callbacks.md
+https://raw.githubusercontent.com/freqtrade/freqtrade/develop/docs/strategy-customization.md
+https://raw.githubusercontent.com/hambilo/ghost-grid-eye-control-5.0/main/Ghost_Grid_Eye_Scalper_v5.00.mq5
+https://raw.githubusercontent.com/hudson-and-thames/arbitragelab/master/docs/source/optimal_mean_reversion/heat_potentials.rst
+https://raw.githubusercontent.com/hudson-and-thames/arbitragelab/master/docs/source/optimal_mean_reversion/ou_model.rst
+https://raw.githubusercontent.com/hudson-and-thames/arbitragelab/master/docs/source/stochastic_control_approach/ou_model_jurek.rst
+https://raw.githubusercontent.com/hudson-and-thames/arbitragelab/master/docs/source/time_series_approach/ou_optimal_threshold_bertram.rst
+https://raw.githubusercontent.com/hudson-and-thames/arbitragelab/master/docs/source/time_series_approach/regime_switching_arbitrage_rule.rst
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/README.md
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/controllers/directional_trading/dman_v3.py
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/controllers/generic/grid_strike.py
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/controllers/market_making/pmm_dynamic.py
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy/avellaneda_market_making/avellaneda_market_making.pyx
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy/avellaneda_market_making/avellaneda_market_making_config_map_pydantic.py
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy/hanging_orders_tracker.py
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy/pure_market_making/inventory_skew_calculator.pyx
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy/pure_market_making/pure_market_making_config_map.py
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy_v2/controllers/directional_trading_controller_base.py
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy_v2/controllers/market_making_controller_base.py
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy_v2/executors/dca_executor/data_types.py
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy_v2/executors/dca_executor/dca_executor.py
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy_v2/executors/grid_executor/data_types.py
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy_v2/executors/grid_executor/grid_executor.py
+https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy_v2/executors/position_executor/data_types.py
+https://raw.githubusercontent.com/je-suis-tm/quant-trading/master/README.md
+https://raw.githubusercontent.com/jonathantheja99/5ers-rag-dev/main/data/faq_data.md
+https://raw.githubusercontent.com/jumpycalm/jumpycalm-cBot-Grid-V3/master/jumpycalm%20Grid3.cs
+https://raw.githubusercontent.com/kwasati/KARL/master/lib/03-backtest-optimization.md
+https://raw.githubusercontent.com/kwasati/KARL/master/lib/04-pitfalls.md
+https://raw.githubusercontent.com/meococ/Trading-EA-MT5/main/03.%20EA%20Developer/PA_Pro/docs/perception/research/RT3_MICROSTRUCTURE.md
+https://raw.githubusercontent.com/mubasharali24428-crypto/SUPER_TRADEMAN/main/ANTIGRAVITY.md
+https://raw.githubusercontent.com/nadav2/short-horizon-reversion/main/README.md
+https://raw.githubusercontent.com/nadav2/short-horizon-reversion/main/paper/out/markets.json
+https://raw.githubusercontent.com/nadav2/short-horizon-reversion/main/paper/out/robustness.json
+https://raw.githubusercontent.com/nautechsystems/nautilus_trader/develop/docs/concepts/backtesting/bar-execution.md
+https://raw.githubusercontent.com/nautechsystems/nautilus_trader/develop/docs/concepts/backtesting/fill-models.md
+https://raw.githubusercontent.com/nkaz001/hftbacktest/master/README.rst
+https://raw.githubusercontent.com/nkaz001/hftbacktest/master/docs/index.rst
+https://raw.githubusercontent.com/nkaz001/hftbacktest/master/docs/latency_models.rst
+https://raw.githubusercontent.com/nkaz001/hftbacktest/master/docs/tutorials/Risk%20Mitigation%20through%20Price%20Protection%20in%20Extreme%20Market%20Conditions.ipynb
+https://raw.githubusercontent.com/nkaz001/hftbacktest/master/docs/tutorials/examples.rst
+https://raw.githubusercontent.com/nkaz001/hftbacktest/master/examples/GLFT%20Market%20Making%20Model%20and%20Grid%20Trading.ipynb
+https://raw.githubusercontent.com/nkaz001/hftbacktest/master/examples/High-Frequency%20Grid%20Trading%20-%20Comparison%20Across%20Other%20Exchanges.ipynb
+https://raw.githubusercontent.com/nkaz001/hftbacktest/master/examples/High-Frequency%20Grid%20Trading%20-%20Simplified%20from%20GLFT.ipynb
+https://raw.githubusercontent.com/nkaz001/hftbacktest/master/examples/High-Frequency%20Grid%20Trading.ipynb
+https://raw.githubusercontent.com/nkaz001/hftbacktest/master/hftbacktest/examples/algo.rs
+https://raw.githubusercontent.com/pensebastian072/fx_hermes_trader/main/journal/B01_B02_POSTMORTEM.md
+https://raw.githubusercontent.com/princeniu/AS-Grid/main/src/single_bot/gate_bot.py
+https://raw.githubusercontent.com/questdb/documentation/main/documentation/cookbook/sql/finance/last-look.md
+https://raw.githubusercontent.com/questdb/documentation/main/documentation/cookbook/sql/finance/markout.md
+https://raw.githubusercontent.com/rellis3/MacroFXModel/main/theory-lab/lessons/hurst-variance-ratio-micro.html
+https://raw.githubusercontent.com/sajidmahamud835/grid-master-pro-mt5-ea/main/GridMaster%20Pro.mq5
+https://raw.githubusercontent.com/sonidelav/GridEA/master/GridEA.mq4
+https://raw.githubusercontent.com/sonidelav/GridEA/master/Library/GridExpert.mqh
+https://raw.githubusercontent.com/tradermonty/claude-trading-skills/main/skills/mt5-robot-tester/references/mt5-cli-reference.md
+https://raw.githubusercontent.com/trderx/EA_MindStorms/master/EAs/Blessing.mq4
+https://raw.githubusercontent.com/vedkanani123/shakuni_trap/main/indicator/olg_7_6_26/algo_deep/MT5_Backtest_Validation_Report.md
+https://raw.githubusercontent.com/vedkanani123/shakuni_trap/main/indicator/olg_7_6_26/algo_deep/MT5_XAUUSD_EA_MASTER_RESEARCH.md
+https://raw.githubusercontent.com/xaiolin17/RoundTrip/master/docs/compliance/research-2026/prop-firm-ea-constraints-2026.md
+https://raw.githubusercontent.com/xxSeasonxx/quant_research/main/docs/strategy_research/fx/catalog/data/results/S014_Bollinger_zscore.json
+https://raw.githubusercontent.com/xxSeasonxx/quant_research/main/docs/strategy_research/fx/outside_view/2026-05-04_fx_data_feasible_strategies.md
+https://raw.githubusercontent.com/zero-was-here/tradingbot/main/mt5_ea/GoldHedgerPro_v4.mq5
+https://traders.studentorg.berkeley.edu/papers/Statistical%20arbitrage%20in%20the%20US%20equities%20market.pdf (search summary only)
+https://virtusinterpress.org/IMG/pdf/rgcv10i3p2.pdf (search summary only)
+https://webhomes.maths.ed.ac.uk/mckinnon/blackouts/StochOptFinanceAndEnergySpringer/Chap1_KellyZiemba.pdf (search summary only)
+https://www.atlaspeakresearch.com/report/07bf72 (search summary only)
+https://www.bis.org/publ/mktc09.htm (search summary only)
+https://www.brandeis.edu/economics/RePEc/brd/doc/Brandeis_WP54.pdf (search summary only)
+https://www.businessperspectives.org/index.php/journals?controller=pdfview&task=download&item_id=13892 (search summary only)
+https://www.esma.europa.eu/node/84933 (search summary only)
+https://www.fernuni-hagen.de/igas/docs/cesa_wp_14.pdf (search summary only)
+https://www.fia.org/sites/default/files/2024-07/FIA_WP_AUTOMATED%20TRADING%20RISK%20CONTROLS_FINAL_0.pdf (search summary only)
+https://www.mdpi.com/1999-4893/19/6/442 (search summary only)
+https://www.mql5.com/en/articles/13845
+https://www.mql5.com/en/articles/13897
+https://www.mql5.com/en/articles/14518
+https://www.mql5.com/en/articles/15067
+https://www.mql5.com/en/articles/18038
+https://www.mql5.com/en/articles/20018
+https://www.mql5.com/en/articles/21833
+https://www.mql5.com/en/articles/21833 (search summary only)
+https://www.mql5.com/en/articles/22175
+https://www.mql5.com/en/articles/22553
+https://www.mql5.com/en/articles/23571
+https://www.mql5.com/en/articles/23673
+https://www.mql5.com/en/articles/24331
+https://www.mql5.com/en/articles/24392
+https://www.mql5.com/en/articles/4102
+https://www.mql5.com/en/articles/7013
+https://www.mql5.com/en/articles/7219
+https://www.mql5.com/en/articles/8390
+https://www.mql5.com/en/blogs/post/689594
+https://www.mql5.com/en/blogs/post/718703
+https://www.mql5.com/en/blogs/post/729097
+https://www.mql5.com/en/blogs/post/741331
+https://www.mql5.com/en/blogs/post/759562
+https://www.mql5.com/en/blogs/post/762740
+https://www.mql5.com/en/blogs/post/763145
+https://www.mql5.com/en/blogs/post/764868
+https://www.mql5.com/en/blogs/post/767250
+https://www.mql5.com/en/blogs/post/767895
+https://www.mql5.com/en/blogs/post/768549
+https://www.mql5.com/en/blogs/post/768904
+https://www.mql5.com/en/blogs/post/769031
+https://www.mql5.com/en/blogs/post/770259
+https://www.mql5.com/en/blogs/post/771318
+https://www.mql5.com/en/blogs/post/771346
+https://www.mql5.com/en/blogs/post/771466
+https://www.mql5.com/en/blogs/post/772163
+https://www.mql5.com/en/blogs/post/772225
+https://www.mql5.com/en/blogs/post/772726
+https://www.mql5.com/en/blogs/post/772967
+https://www.mql5.com/en/blogs/post/773035
+https://www.mql5.com/en/blogs/post/773167
+https://www.mql5.com/en/blogs/post/773495
+https://www.mql5.com/en/blogs/post/773858
+https://www.mql5.com/en/blogs/post/774103
+https://www.mql5.com/en/blogs/post/774694
+https://www.mql5.com/en/blogs/post/775398
+https://www.mql5.com/en/blogs/post/775419
+https://www.mql5.com/en/blogs/post/775443
+https://www.mql5.com/en/blogs/post/776032
+https://www.mql5.com/en/blogs/post/776360
+https://www.mql5.com/en/blogs/post/776778
+https://www.mql5.com/en/blogs/post/776855
+https://www.mql5.com/en/blogs/post/776887
+https://www.mql5.com/en/code/70764
+https://www.mql5.com/en/code/75380
+https://www.mql5.com/en/code/76518
+https://www.mql5.com/en/code/76972
+https://www.mql5.com/en/code/77535
+https://www.mql5.com/en/code/77546
+https://www.mql5.com/en/code/77935
+https://www.mql5.com/en/forum/139792
+https://www.mql5.com/en/forum/14717
+https://www.mql5.com/en/forum/192936
+https://www.mql5.com/en/forum/482148/page4
+https://www.mql5.com/en/forum/491887
+https://www.mql5.com/en/forum/502291
+https://www.mql5.com/en/forum/504886
+https://www.mql5.com/en/forum/507174
+https://www.mql5.com/en/forum/510133
+https://www.mql5.com/en/forum/514413
+https://www.mql5.com/en/forum/8197/page9
+https://www.mql5.com/en/market/product/106445
+https://www.mql5.com/en/market/product/120446
+https://www.mql5.com/en/market/product/133466
+https://www.mql5.com/en/market/product/135273
+https://www.mql5.com/en/market/product/14844
+https://www.mql5.com/en/market/product/148692
+https://www.mql5.com/en/market/product/156724
+https://www.mql5.com/en/market/product/26176
+https://www.mql5.com/en/market/product/28252
+https://www.mql5.com/en/market/product/28258
+https://www.mql5.com/en/market/product/31356
+https://www.mql5.com/en/market/product/31958
+https://www.mql5.com/en/market/product/38648
+https://www.mql5.com/en/market/product/41075
+https://www.mql5.com/en/market/product/53009
+https://www.mql5.com/en/market/product/53348
+https://www.mql5.com/en/market/product/58106
+https://www.mql5.com/en/market/product/66317
+https://www.mql5.com/en/market/product/66358
+https://www.mql5.com/en/market/product/69116
+https://www.mql5.com/en/market/product/87953
+https://www.mql5.com/en/market/product/93916
+https://www.mql5.com/en/market/product/94219
+https://www.mql5.com/en/market/product/95565
+https://www.nber.org/papers/w12413 (search summary only)
+https://www.nber.org/papers/w27036 (search summary only)
+https://www.nber.org/papers/w8959 (search summary only)
+https://www.nber.org/system/files/working_papers/w9433/w9433.pdf (search summary only)
+https://www.newyorkfed.org/medialibrary/media/research/staff_reports/sr125.pdf (search summary only)
+https://www.olsendata.com/data_products/client_papers/papers/200606-MendeMenkhoff-ProfSpecIntraDayFxTrad.pdf (search summary only)
+https://www.sciencedirect.com/science/article/pii/S2212567115007315 (search summary only)
+https://www.smallake.kr/wp-content/uploads/2014/12/carteajaimungalriccihft_wbs.pdf (search summary only)

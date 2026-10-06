@@ -1,0 +1,965 @@
+{
+ "design": {
+  "design_name": "BayesianGrid v7 HF: bounded-cycle dual grid scalper (EURUSD, M1/M5, $100)",
+  "summary": "v7 keeps the user's core design: two independent grids isolated by magic number (BUY and SELL), and one shared TP per grid set at the live volume-weighted average entry +/- TP and recomputed from live positions after every fill. v7 changes that design from an open-ended averaging machine into a sequence of finite cycles, each with a known loss limit. Every basket now has three barriers, in the order they were added for survival:\n(1) A hard time barrier measured from the oldest open position. No adds after 15 min, the TP shrinks from 10 min, and everything is closed at 30 min (configurable 1-30).\n(2) A price stop fixed relative to layer 1 at 3 x sigma15, placed before the first fill. It is backed by a broker-side SL on every ticket.\n(3) A pre-trade ladder simulation that removes layers until the worst case fits a dollar budget.\nThat budget is the smaller of 3.5% of equity and a drawdown-floor (CPPI) cushion. Above the budget sit a daily limit (6%), a cap of 2 stops per day, a weekly limit (10%) and a hard kill at -20% from peak.\n\nThe lot ladder starts at 0.01. It may step up once to 0.02 on layer 3, and the hard caps are 0.04 lots per side, 0.08 in total and 0.03 net. On a $100 standard account the 0.01 minimum lot leaves room for only 2-3 layers, so the budget check usually trims the step-up away. Every source sweep agrees that per-layer escalation is where grids die (inference plus citations below).\n\nThe other filters cut the number of baskets that reach the stop. They are:\n- session windows: quiet Asia first, with rollover, the London open and the London fix blacked out;\n- a news filter that now also freezes adds, flattens 5 minutes before the event, and refuses any basket whose 30-minute window would overlap an event;\n- spacing and TP scaled by volatility, with cost floors;\n- a breaker on volatility expansion and price jumps;\n- a minimum time between adds, with adds triggered on closed M1 bars;\n- skew of the shared inventory across the two grids;\n- an optional stretch-based entry trigger.\n\nPlainly: the research and our own Oanda M1 statistics say the gross 5-30 minute snap-back on EURUSD is only about +0.15 to +0.5 pip, against roughly 0.8-1.4 pip of round-trip cost. These changes can turn \"blow up the account\" into \"lose at most about 12-20%, then stop\". They do not create edge. The design should be deployed live only if the fully stopped, fully costed version is net positive out of sample. That probably requires a raw-spread or cent account, leverage of 1:200 or more, and trading only in the measured mean-reverting windows.",
+  "keep_from_v6": [
+   "Two independent grids isolated by magic number (MagicBuy / MagicSell). SetTP never touches the other grid. All risk aggregation in v7 reads both magics but writes only to its own.",
+   "One shared TP per grid at the live volume-weighted average entry +/- TP, recomputed from live positions after every fill (no stale state). In v7 the TP distance becomes time-, depth- and inventory-dependent, but it is still computed from live positions.",
+   "BaseLot + FlatLayers + LotIncrement + LotIncEvery ladder parameterisation. Kept, but bounded by MaxLotsPerSide, MaxTotalLots and the pre-trade budget check, with new defaults 0.01 / 2 / 0.01 / 1.",
+   "The news filter (MQL5 calendar live, CSV in the tester, NewsCsvShiftHours), NewsPauseLayers and NewsCloseMode. Defaults change to pause adds and flatten before the event.",
+   "Spread guard (MaxSpreadPts), now extended to every add and made relative to the rolling median.",
+   "Margin buffer check (MarginBufferMult), now also applied to adds as a projected margin-level check.",
+   "DD halt and emergency basket stop (MaxEquityDD_Pct / EmergencyCloseDD_Pct / HaltCooldownMin), now superseded by the layered account breakers but kept as a backstop.",
+   "Friday close (CloseOnFriday), plus BlockFriday-style gating of new grids.",
+   "Time filter gating NEW grids only, generalised to session windows that also flatten at the window end.",
+   "Persistence of stats, the on-chart panel and debug logging. The panel adds equity drawdown, the DDR and the remaining risk budget."
+  ],
+  "modifications": [
+   {
+    "name": "M1. Triple-barrier basket clock: hard 30-min close, no-add cutoff, TP that decays over time",
+    "priority": 1,
+    "what": "For each magic, BasketAgeMin = (TimeCurrent() - min(POSITION_TIME over that magic's open positions)) / 60, read from live positions on every tick. Every position is younger than the oldest one, so 'every position closed within MaxHoldMin' is guaranteed.\n(a) If BasketAgeMin >= MaxHoldMin: close all positions of that magic at market, using the snapshot-and-retry closer from M14.\n(b) No layer adds when BasketAgeMin >= NoAddAfterMin.\n(c) Shared-TP distance: TPdist(t) = TP0_basket for t < TPDecayStartMin. After that, TPdist(t) = max(TPFloorPips, TP0_basket * (1 - (t - TPDecayStartMin) / (MaxHoldMin - TPDecayStartMin))). TPFloorPips is a net profit above break-even, where break-even = weighted average entry, since BUY entries are at ask and the TP is hit on bid, so spread is already paid.\n(d) Do not open a new L1 unless the full window [now, now + MaxHoldMin] is clear of news blocks (M5), session end (M6) and rollover.\n(e) Minimum basket age before a TP close is allowed: MinHoldSec (default 120). The server TP is placed only once the newest position is MinHoldSec old; until then the TP check is virtual (M14). This keeps the EA clear of tick-scalping rules.\nSimulator: on each M1 bar compute the age at the bar open and at the bar close. If the age crosses MaxHoldMin inside the bar, exit at the open of the first bar with age >= MaxHoldMin (conservative: exit at that bar's open +/- half-spread + slippage).",
+    "why": "Every institutional and practitioner source bounds holding time. Hummingbot executors carry a time_limit, closed with a MARKET order, of 2700 s by default (https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy_v2/executors/position_executor/data_types.py, https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy_v2/controllers/market_making_controller_base.py). Freqtrade's minimal_roi decays the required profit by minutes since entry down to break-even (https://raw.githubusercontent.com/freqtrade/freqtrade/develop/docs/strategy-customization.md). Blessing's Early Exit decays TP toward break-even by hours and level, counting from the first trade (https://raw.githubusercontent.com/trderx/EA_MindStorms/master/EAs/Blessing.mq4). The Taranto/BGC finite cycles say that unconstrained grids are ruined almost surely while finite, restartable cycles are not (https://www.mql5.com/en/articles/21833, https://www.mql5.com/en/code/70764). In the theory, the Avellaneda-Stoikov horizon term shrinks as t approaches T (https://people.orie.cornell.edu/sfs33/LimitOrderBook.pdf). Kitapbayev-Leung find the trading boundaries change near the deadline (https://arxiv.org/abs/1707.03498). Dealer inventory half-life is about 10 min (https://www.brandeis.edu/economics/RePEc/brd/doc/Brandeis_WP54.pdf). Hummingbot's DCA time limit counts from executor creation, which is the wrong clock; v7 uses the first fill (https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy_v2/executors/dca_executor/dca_executor.py). Alpha Capital and The5ers rules define abusive tick-scalping by sub-2-minute durations (https://raw.githubusercontent.com/xaiolin17/RoundTrip/master/docs/compliance/research-2026/prop-firm-ea-constraints-2026.md, https://raw.githubusercontent.com/jonathantheja99/5ers-rag-dev/main/data/faq_data.md). Our backtest: open-ended holding blew every $100 config. Caveat (inference, own M1 statistics): a time stop alone does not cap price loss. The 30-minute one-sided MAE p99 is 17.5-35 pips outside news, so M2 is mandatory.",
+    "ea_inputs": [
+     {
+      "name": "MaxHoldMin",
+      "type": "int",
+      "default": "30",
+      "search_range": "10-30 step 5 (hard cap 30, min 1)"
+     },
+     {
+      "name": "NoAddAfterMin",
+      "type": "int",
+      "default": "15",
+      "search_range": "8-20 step 2 (must be < MaxHoldMin)"
+     },
+     {
+      "name": "TPDecayStartMin",
+      "type": "int",
+      "default": "10",
+      "search_range": "5-20 step 5"
+     },
+     {
+      "name": "TPFloorPips",
+      "type": "double",
+      "default": "0.3",
+      "search_range": "0.0-0.6 step 0.1"
+     },
+     {
+      "name": "MinHoldSec",
+      "type": "int",
+      "default": "120",
+      "search_range": "0-180 step 60"
+     }
+    ],
+    "backtestable_with_m1": "yes: age is a deterministic function of the bar timestamps, and exits at bar opens are conservative. The only approximation is a sub-minute MinHoldSec (treat it as 2 bars).",
+    "risk_notes": "A time-stop exit costs the spread plus slippage. Log time-stop exits separately. If more than about 40% of baskets end on the time stop at a loss, the TP is too far for the session's sigma. Do not set NoAddAfterMin close to MaxHoldMin: late layers are just bought and then dumped."
+   },
+   {
+    "name": "M2. Fixed basket price stop anchored to L1, plus broker-side SL on every ticket",
+    "priority": 2,
+    "what": "At L1, freeze sigma15_basket (see M7) and compute the stop price once. For BUY: StopPx = L1_ask - BasketStopSigma * sigma15_basket, measured on bid. For SELL: L1_bid + the same distance, measured on ask. Optionally floor the distance at 2 x spacing.\n(a) Virtual stop: when the bid <= StopPx (BUY) / the ask >= StopPx (SELL), close all positions of that magic at market with retries.\n(b) Each ticket is sent with a broker-side SL = StopPx -/+ BrokerSLBufferPips. It is never modified afterwards, so a terminal or VPS outage is still covered and no modify requests are spent.\n(c) No layer may be placed closer than MinStopGapSpacing x spacing to StopPx. In practice this sets MaxLayers to floor((stop distance - MinStopGapSpacing*s)/s) + 1, which is usually 3.\n(d) After a stop: that side is blocked for StopCooldownMin.\nSimulator: if the M1 bar's low (BUY) touches StopPx, assume the stop filled at min(StopPx, open) - slippage. Whenever both TP and stop lie inside the same bar's range, take the stop first (pessimistic ordering).",
+    "why": "Kaminski-Lo: a stop is insurance whose 'stopping premium' is positive only under return persistence. Grids die in exactly that tail (https://dspace.mit.edu/bitstream/handle/1721.1/114876/Lo_When%20Do%20Stop-Loss.pdf). Leung-Li: the entry region lies strictly above the stop, and the TP must be re-optimised together with the stop (https://arxiv.org/abs/1411.5062). Schmidhuber-Safari: weak trends revert, significant trends persist (https://arxiv.org/abs/2501.16772). Jurek-Yang: allocation should be cut beyond a critical mispricing (https://raw.githubusercontent.com/hudson-and-thames/arbitragelab/master/docs/source/stochastic_control_approach/ou_model_jurek.rst). Practitioner versions: Orchard's stop-loss grid, which 'removes the possibility of unlimited drawdowns' (https://github.com/OrchardForexTutorials/220403_stop_loss_grid); Hummingbot's grid limit_price stop-out (https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy_v2/executors/grid_executor/data_types.py); and the per-ticket emergency SLs in GoldHedgerPro and Blessing (UsePowerOutSL) (https://raw.githubusercontent.com/zero-was-here/tradingbot/main/mt5_ea/GoldHedgerPro_v4.mq5). FIA practice: pre-trade limits plus a kill switch (https://www.fia.org/sites/default/files/2024-07/FIA_WP_AUTOMATED%20TRADING%20RISK%20CONTROLS_FINAL_0.pdf). Own M1 statistics (inference): moves beyond 3 sigma continue at 15-30 min in London/NY (-0.4 to -2.0 pips), which supports placing the stop near 3 sigma15.",
+    "ea_inputs": [
+     {
+      "name": "BasketStopSigma",
+      "type": "double",
+      "default": "3.0",
+      "search_range": "2.5-3.5 step 0.25"
+     },
+     {
+      "name": "MinStopGapSpacing",
+      "type": "double",
+      "default": "1.0",
+      "search_range": "0.75-1.5 step 0.25"
+     },
+     {
+      "name": "BrokerSLBufferPips",
+      "type": "double",
+      "default": "3.0",
+      "search_range": "2-5 (not optimised; safety only)"
+     },
+     {
+      "name": "StopCooldownMin",
+      "type": "int",
+      "default": "60",
+      "search_range": "30-120 step 30"
+     }
+    ],
+    "backtestable_with_m1": "approx: touch detection on M1 high/low is exact, but the fill price on gaps and the intrabar order against TP are unknown. Use pessimistic ordering plus 0.5 pip of slippage on stops, and validate on MT5 real ticks.",
+    "risk_notes": "A stop gives no edge. Under a random walk it lowers expectancy (Kaminski-Lo). It is bought as ruin insurance. Gaps (news, Monday opens) can fill well beyond StopPx. M5 and M6 exist to keep baskets out of those windows."
+   },
+   {
+    "name": "M3. Ladder sized to a dollar risk budget: pre-trade worst-case simulation with auto-fit, 0.01 start, capped scale-up",
+    "priority": 3,
+    "what": "At each L1 decision:\n1. Compute RiskMoney = min(MaxBasketRiskPct/100 * Equity, CPPIMult * (Equity - FloorFrac * PeakEquity)), where PeakEquity is the persisted high-water mark of equity.\n2. Build the planned ladder: price_k = L1 -/+ (k-1)*s (s from M7, with optional expansion s_k = s*(1 + SpacingExpand*(k-2)) for k >= 3). lot_k = BaseLot for k <= FlatLayers, else BaseLot + LotIncrement*ceil((k-FlatLayers)/LotIncEvery), clamped to MaxLotPerPos. Keep only layers that satisfy M2(c).\n3. Worst = sum_k lot_k * (|price_k - StopPx| + spread_now + StopSlipPips) * PipValuePerLot.\n4. While Worst > RiskMoney: first set the largest increment layer back to BaseLot, then drop the deepest layer.\n5. If one layer at BaseLot still does not fit, skip the cycle and log 'budget'.\nHard caps, checked before every OrderSend: side lots + new lot <= MaxLotsPerSide; both-grid lots <= MaxTotalLots; |buyLots - sellLots| <= MaxNetLots (see M11); projected margin level after the order >= MinMarginLevelPct.\nBaseLot is a fixed 0.01 on a standard $100 account. Optional equity scaling: BaseLot = floor_to_step(Equity / EquityPerBaseLot) * 0.01, recomputed only at cycle start and never from the last basket's result. Recompute the plan only at cycle start; adds follow the frozen plan.",
+    "why": "Grid floating loss grows with the triangular number N(N-1)/2 for flat lots, and as (N^3-N)/6 for +1-step ladders (https://www.mql5.com/en/articles/21833, https://www.mql5.com/en/code/76972). RecoveryPilot rejects or auto-fits each cycle against a pre-simulated worst case (https://www.mql5.com/en/blogs/post/776887). martin-binance and the Hummingbot DCA executor fix the whole ladder budget before the first fill (https://raw.githubusercontent.com/DogsTailFarmer/martin-binance/master/martin_binance/executor.py, https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy_v2/executors/dca_executor/data_types.py). Jurek-Yang's optimum is linear in the deviation and proportional to wealth, so it favours flat lots (https://raw.githubusercontent.com/hudson-and-thames/arbitragelab/master/docs/source/stochastic_control_approach/ou_model_jurek.rst). A 55-strategy comparison found that at equal profit a bigger fixed lot gave about 1/3-1/2 the risk of ruin of martingale (https://www.mql5.com/en/blogs/post/773495). An MDPI linear 'soft martingale' still had 79.97% equity drawdown (https://www.mdpi.com/1999-4893/19/6/442). Grossman-Zhou: exposure should be proportional to the cushion above a drawdown floor (https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1467-9965.1993.tb00044.x). passivbot caps exposure as notional/equity, with ruin distance about 1/WE (https://raw.githubusercontent.com/enarjord/passivbot/master/docs/risk_management.md). GLFT and hftbacktest use a hard inventory cap Q (https://arxiv.org/abs/1105.3115, https://raw.githubusercontent.com/nkaz001/hftbacktest/master/hftbacktest/examples/algo.rs).",
+    "ea_inputs": [
+     {
+      "name": "BaseLot",
+      "type": "double",
+      "default": "0.01",
+      "search_range": "fixed 0.01 on $100 standard (not optimised)"
+     },
+     {
+      "name": "FlatLayers",
+      "type": "int",
+      "default": "2",
+      "search_range": "2-3"
+     },
+     {
+      "name": "LotIncrement",
+      "type": "double",
+      "default": "0.01",
+      "search_range": "0.00-0.01"
+     },
+     {
+      "name": "LotIncEvery",
+      "type": "int",
+      "default": "1",
+      "search_range": "1-2"
+     },
+     {
+      "name": "MaxLayers",
+      "type": "int",
+      "default": "3",
+      "search_range": "2-4 (auto-fit may reduce)"
+     },
+     {
+      "name": "MaxLotPerPos",
+      "type": "double",
+      "default": "0.02",
+      "search_range": "0.01-0.02"
+     },
+     {
+      "name": "MaxLotsPerSide",
+      "type": "double",
+      "default": "0.04",
+      "search_range": "0.03-0.05"
+     },
+     {
+      "name": "MaxTotalLots",
+      "type": "double",
+      "default": "0.08",
+      "search_range": "0.06-0.08"
+     },
+     {
+      "name": "MaxBasketRiskPct",
+      "type": "double",
+      "default": "3.5",
+      "search_range": "2.0-4.0 step 0.5"
+     },
+     {
+      "name": "CPPIMult",
+      "type": "double",
+      "default": "0.175",
+      "search_range": "0.10-0.20 (set so RiskMoney at peak = MaxBasketRiskPct)"
+     },
+     {
+      "name": "FloorFrac",
+      "type": "double",
+      "default": "0.80",
+      "search_range": "0.75-0.85"
+     },
+     {
+      "name": "StopSlipPips",
+      "type": "double",
+      "default": "0.5",
+      "search_range": "0.3-1.0"
+     },
+     {
+      "name": "MinMarginLevelPct",
+      "type": "double",
+      "default": "300",
+      "search_range": "250-500"
+     },
+     {
+      "name": "EquityPerBaseLot",
+      "type": "double",
+      "default": "0 (off)",
+      "search_range": "0 or 150-300 USD"
+     }
+    ],
+    "backtestable_with_m1": "yes: pure arithmetic at cycle start. Use the modelled spread for the hour.",
+    "risk_notes": "This is where the user's 'start 0.01 and scale up per layer' meets reality. On $100 standard in a sigma15 = 4 pip session, the 0.01/0.01/0.02 ladder just fits 3.5% ($3.48). In London (sigma15 about 6) auto-fit trims to 0.01/0.01 or less. The margin check needs leverage of about 1:200 or more on standard; at 1:30 (ESMA), one 0.01 lot needs about $37 of margin and the design cannot run. A cent account gives the granularity for real per-layer scaling."
+   },
+   {
+    "name": "M4. Layered account breakers: daily loss, stops per day, weekly loss, peak-to-trough kill",
+    "priority": 4,
+    "what": "Keep all of these on equity, including floating P/L, swap and commission, across BOTH magics. Persist them.\n(1) DayStartEquity at server-day roll (or 00:00 UTC). If Equity <= DayStartEquity*(1 - DailyLossPct/100): close both grids and block new grids until the next day.\n(2) StopsToday counts basket-stop exits plus losing time-stop exits whose loss is > 1% of equity. When it reaches MaxStopsPerDay, block new grids for the rest of the day; open baskets run to their own barriers.\n(3) WeekStartEquity: if Equity drops more than WeeklyLossPct below it, block until the next week.\n(4) Kill: if Equity <= PeakEquity*FloorFrac, close everything and set a persistent latch that only the input ResetKillLatch=true can clear (manual review).\n(5) Loss-streak cooldown: 2 losing baskets in the same session window means no new grids until the next window.\nDo not latch on historical crossings: evaluate the current value only, as passivbot does, except for the kill latch.",
+    "why": "Grossman-Zhou drawdown floor (https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1467-9965.1993.tb00044.x). FIA kill-switch practice (https://www.fia.org/sites/default/files/2024-07/FIA_WP_AUTOMATED%20TRADING%20RISK%20CONTROLS_FINAL_0.pdf). passivbot equity hard stop with a restart policy (https://raw.githubusercontent.com/enarjord/passivbot/master/docs/configuration.md, https://github.com/enarjord/passivbot/blob/master/docs/equity_hard_stop_loss.md). GoldHedgerPro daily 3%, peak-15% halt (https://raw.githubusercontent.com/zero-was-here/tradingbot/main/mt5_ea/GoldHedgerPro_v4.mq5). Freqtrade StoplossGuard and MaxDrawdown in equity mode (https://raw.githubusercontent.com/freqtrade/freqtrade/develop/docs/includes/protections.md). Ghost Grid consecutive-loss cooldown (https://raw.githubusercontent.com/hambilo/ghost-grid-eye-control-5.0/main/Ghost_Grid_Eye_Scalper_v5.00.mq5). RecoveryPilot equity brake and lock time (https://www.mql5.com/en/blogs/post/776887). Basket Protective Close argues for percent limits over fixed money (https://www.mql5.com/en/code/76518). The v6 DD halt only blocked new grids; the practitioner evidence says breakers must flatten.",
+    "ea_inputs": [
+     {
+      "name": "DailyLossPct",
+      "type": "double",
+      "default": "6.0",
+      "search_range": "4-8 (not optimised for profit)"
+     },
+     {
+      "name": "MaxStopsPerDay",
+      "type": "int",
+      "default": "2",
+      "search_range": "1-3"
+     },
+     {
+      "name": "WeeklyLossPct",
+      "type": "double",
+      "default": "10.0",
+      "search_range": "8-12"
+     },
+     {
+      "name": "FloorFrac",
+      "type": "double",
+      "default": "0.80",
+      "search_range": "shared with M3"
+     },
+     {
+      "name": "ResetKillLatch",
+      "type": "bool",
+      "default": "false",
+      "search_range": "manual only"
+     },
+     {
+      "name": "MaxLosingBasketsPerWindow",
+      "type": "int",
+      "default": "2",
+      "search_range": "1-3"
+     }
+    ],
+    "backtestable_with_m1": "yes: deterministic state machine on simulated equity, marked to market at each bar close (use the bar's worst price for the intrabar equity check).",
+    "risk_notes": "These limit how fast losses can accumulate. They cannot make a negative-expectancy system positive; they only make it fail slowly and visibly. Fix the thresholds from the risk budget and never tune them for profit."
+   },
+   {
+    "name": "M5. News filter v7: horizon-aware block, freeze adds, flatten before release, volatility-settle restart",
+    "priority": 5,
+    "what": "Use the existing calendar/CSV engine.\n(a) A new L1 is allowed only if no qualifying event (high impact, EUR or USD) lies in [now - NewsAfterMin, now + MaxHoldMin + NewsBeforeMin].\n(b) NewsPauseLayers default = true, so no adds inside [T - NewsBeforeMin, T + NewsAfterMin].\n(c) NewsCloseMode default = close all at T - NewsCloseMin (5) for any open basket. Cheap, because baskets are young.\n(d) Tier-1 events (title keywords NFP / Non-Farm, CPI, FOMC / Fed Funds, ECB rate / press conference, input-editable list) use NewsAfterTier1Min.\n(e) Restart only after the window ends AND sigma15_now <= NewsSettleMult * hour-of-day median sigma15 AND spread <= 1.3 x the 60-min median, with a hard maximum block of NewsMaxBlockMin.\nThe tester uses the CSV, because the MQL5 calendar is empty in the tester.",
+    "why": "Our backtest: the news filter plus paused adds materially cut drawdowns. Andersen-Bollerslev: big announcement volatility, main impact within 10-20 min, elevated for hours (https://public.econ.duke.edu/~boller/Published_Papers/jf_98.pdf). The price jump precedes the volume surge (https://ideas.repec.org/a/tpr/jeurec/v6y2008i2-3p589-596.html). Liquidity dries up before releases (https://www.nber.org/papers/w27036). About two-thirds of the news effect arrives through subsequent order flow (https://www.nber.org/system/files/working_papers/w9433/w9433.pdf). GoldHedgerPro changelog: blocking only new entries let the martingale 'keep averaging into spikes'; v4.2 freezes adds and resumes on an ATR settle (https://raw.githubusercontent.com/zero-was-here/tradingbot/main/mt5_ea/GoldHedgerPro_v4.mq5). Graded close-before-news options (https://www.mql5.com/en/market/product/66317). The MQL5 calendar returns nothing in the tester (https://raw.githubusercontent.com/elrizwiraswara/nyao_scalper_mt5/main/README.md). Own statistics (inference): in news windows the 30-min MAE p99 is 99.6 pips vs 17.5-34.9 outside, and VR30 is 1.05 (trending).",
+    "ea_inputs": [
+     {
+      "name": "NewsBeforeMin",
+      "type": "int",
+      "default": "30",
+      "search_range": "15-45 step 15"
+     },
+     {
+      "name": "NewsAfterMin",
+      "type": "int",
+      "default": "60",
+      "search_range": "30-90 step 15"
+     },
+     {
+      "name": "NewsAfterTier1Min",
+      "type": "int",
+      "default": "120",
+      "search_range": "60-180 step 30"
+     },
+     {
+      "name": "NewsCloseMin",
+      "type": "int",
+      "default": "5",
+      "search_range": "2-15"
+     },
+     {
+      "name": "NewsPauseLayers",
+      "type": "bool",
+      "default": "true",
+      "search_range": "fixed true"
+     },
+     {
+      "name": "NewsCloseMode",
+      "type": "enum",
+      "default": "NEWS_CLOSE_ALL",
+      "search_range": "fixed"
+     },
+     {
+      "name": "NewsSettleMult",
+      "type": "double",
+      "default": "1.5",
+      "search_range": "1.2-2.0"
+     },
+     {
+      "name": "NewsMaxBlockMin",
+      "type": "int",
+      "default": "180",
+      "search_range": "120-240"
+     },
+     {
+      "name": "Tier1Keywords",
+      "type": "string",
+      "default": "Non-Farm,NFP,CPI,FOMC,Fed Funds,ECB,Main Refinancing,Press Conference",
+      "search_range": "n/a"
+     }
+    ],
+    "backtestable_with_m1": "yes, given the project CSV calendar. The calendar's coverage of historical events is the limiting factor.",
+    "risk_notes": "Unscheduled headlines are not in any calendar; M9 covers them. Check DST and time-zone alignment of the CSV against known NFP timestamps."
+   },
+   {
+    "name": "M6. Session windows with rollover, London-open and fix blackouts; last L1 = window end - MaxHoldMin; flatten at window end",
+    "priority": 6,
+    "what": "Replace AllowedHours with SessionWindowsUTC, a list of HH:MM-HH:MM ranges converted with ServerGMTOffset plus an explicit DST rule. Do not rely on TimeGMT() in the tester.\n(a) A new L1 is allowed only if now is in a window AND now <= window_end - MaxHoldMin.\n(b) No adds after window_end - 10 min.\n(c) At window_end, close any basket still open.\n(d) Hard blackouts override the windows:\n- RolloverBlackoutUTC 19:00-23:15 (summer; shift 1 h in winter via DST);\n- LondonOpenVetoUTC 06:45-08:30;\n- London fix 15:55-16:10 London local time, double length at month-end;\n- ECB reference fix 13:05-13:25 UTC;\n- Monday before 01:00 UTC;\n- Friday after FridayLastEntryUTC 19:00.\n(e) Default windows: '00:30-05:00' only. Test '08:30-11:30' (allowed only if the M9 ratio < 1.5 and price is back inside the Asian range) and '15:15-18:45' as separate candidates. Each window must pass the per-window validation in the validation plan before it is enabled.\nWith the 30-min cap this also makes swap structurally zero.",
+    "why": "Saxo live EURUSD spreads: median 1.1 pip from 00 to 19 UTC, max 9.9-18.3 at 19-20 UTC, median 2.7 at 21 UTC (https://raw.githubusercontent.com/ebadiamirhossein/sentinel/main/journal/M10b_SPIKE.md). A minute-bar FX mean-reversion study found 47.9% of gross PnL in 21-02 UTC, untradeable at retail spreads (https://raw.githubusercontent.com/pensebastian072/fx_hermes_trader/main/journal/B01_B02_POSTMORTEM.md). EURUSD is quiet in Asia (https://www.mql5.com/en/articles/4102). Intraday liquidity is U-shaped (https://www.nber.org/papers/w12413). The dollar appreciates before the Tokyo/Frankfurt/London fixes and reverses after (https://onlinelibrary.wiley.com/doi/full/10.1111/jofi.13306). Thin early-Asia flash crash (https://www.bis.org/publ/mktc09.htm). Grid EAs gate new baskets by session but keep management active (https://raw.githubusercontent.com/hambilo/ghost-grid-eye-control-5.0/main/Ghost_Grid_Eye_Scalper_v5.00.mq5). Swap is a material multi-night cost (https://www.mql5.com/en/blogs/post/775419). Own statistics (inference):\n- VR30 is 0.74-0.85 at 00-04 UTC, 1.02-1.04 at 05-07 UTC, and 0.76-0.86 at 14-16 UTC.\n- Asia sigma15 is about 3.4-6 pips, and its 30-min MAE p99 is 32 pips, vs 58 in the overlap.\n- After an Asian-range break at 07-11 UTC, the 60-min extension reaches p99 = 55.6 pips.",
+    "ea_inputs": [
+     {
+      "name": "SessionWindowsUTC",
+      "type": "string",
+      "default": "00:30-05:00",
+      "search_range": "candidates: 00:30-05:00 | 08:30-11:30 | 15:15-18:45 (each on/off)"
+     },
+     {
+      "name": "RolloverBlackoutUTC",
+      "type": "string",
+      "default": "19:00-23:15",
+      "search_range": "19:00-23:15 to 20:30-23:00"
+     },
+     {
+      "name": "LondonOpenVetoUTC",
+      "type": "string",
+      "default": "06:45-08:30",
+      "search_range": "fixed"
+     },
+     {
+      "name": "UseFixBlackout",
+      "type": "bool",
+      "default": "true",
+      "search_range": "fixed"
+     },
+     {
+      "name": "FridayLastEntryUTC",
+      "type": "string",
+      "default": "19:00",
+      "search_range": "18:00-19:30"
+     },
+     {
+      "name": "MondayFirstEntryUTC",
+      "type": "string",
+      "default": "01:00",
+      "search_range": "00:30-02:00"
+     },
+     {
+      "name": "ServerGMTOffset",
+      "type": "int",
+      "default": "2",
+      "search_range": "broker-specific"
+     },
+     {
+      "name": "ServerUsesUSDST",
+      "type": "bool",
+      "default": "true",
+      "search_range": "broker-specific"
+     }
+    ],
+    "backtestable_with_m1": "yes: pure timestamp logic. The simulator must apply the same DST rule as the broker server.",
+    "risk_notes": "Night-session edges decay; one well-known EURUSD night scalper reportedly turned negative after 2022-23 (https://www.mql5.com/en/market/product/66358). Re-validate each window yearly. Asia has low sigma but standard-account spread is a bigger share of its TP."
+   },
+   {
+    "name": "M7. Volatility-scaled spacing and TP (sigma15 EWMA blended with an hour-of-day prior), frozen per basket, with cost floors",
+    "priority": 7,
+    "what": "Definitions:\n- sigma1m = EWMA standard deviation of M1 close-to-close changes (in pips), half-life SigmaHalfLifeMin = 60.\n- sigma15_raw = sigma1m * sqrt(15).\n- Prior = median sigma15 for the same UTC hour over the last SigmaPriorDays = 20 trading days.\n- sigma15 = clamp(sigma15_raw, 0.7*prior, 1.5*prior).\n- CostPips = spread_now + CommissionPerLotRT/PipValuePerLot + SlipPips.\nComputed at L1 and frozen for the basket:\n- s = max(SpacingSigmaMult*sigma15, SpacingCostMult*CostPips, MinSpacingPips), capped at MaxSpacingPips.\n- TP0 = max(TPSigmaMult*sigma15, TPCostMult*CostPips).\n- Depth shrink: TP0_n = TP0*(1 - TPDepthShrink*(n-1)), floored at TPFloorPips, where n = open layers.\nThe stop (M2) uses the same sigma15. M1 time decay and M11 skew multiply TP0_n. Freezing keeps the average-price geometry stable inside a basket.",
+    "why": "hftbacktest's simplified-GLFT grid sets half_spread = volatility*vol_to_half_spread from a rolling 10-min volatility (https://raw.githubusercontent.com/nkaz001/hftbacktest/master/examples/High-Frequency%20Grid%20Trading%20-%20Simplified%20from%20GLFT.ipynb). passivbot thresholds scale with an EMA of ln(high/low) on 1m and 1h (https://raw.githubusercontent.com/enarjord/passivbot/master/docs/configuration.md). Hummingbot pmm_dynamic uses NATR spreads (https://raw.githubusercontent.com/hummingbot/hummingbot/master/controllers/market_making/pmm_dynamic.py). BGC uses ATR spacing (https://www.mql5.com/en/code/70764). Zone-recovery practice requires spacing of at least 20-25 spreads (https://www.mql5.com/en/blogs/post/775443). martin-binance requires PROFIT > 2x fee (https://raw.githubusercontent.com/DogsTailFarmer/martin-binance/master/martin_binance/templates/cli_1_BTCUSDT.py). Volatility targeting cuts left tails (https://people.duke.edu/~charvey/Research/Published_Papers/P135_The_impact_of.pdf). Intraday volatility seasonality (https://public.econ.duke.edu/~boller/Published_Papers/jf_98.pdf). Blessing's break-even at depth (https://raw.githubusercontent.com/trderx/EA_MindStorms/master/EAs/Blessing.mq4). Own statistics (inference): sd15 ranges from 3.4 pips (04 UTC) to 8.8 (14 UTC), so the fixed 7.5-pip v6 spacing is about 2 sigma in Asia but under 1 sigma in the overlap.",
+    "ea_inputs": [
+     {
+      "name": "SigmaHalfLifeMin",
+      "type": "int",
+      "default": "60",
+      "search_range": "30-120"
+     },
+     {
+      "name": "SigmaPriorDays",
+      "type": "int",
+      "default": "20",
+      "search_range": "10-40"
+     },
+     {
+      "name": "SpacingSigmaMult",
+      "type": "double",
+      "default": "1.0",
+      "search_range": "0.75-1.5 step 0.125"
+     },
+     {
+      "name": "SpacingCostMult",
+      "type": "double",
+      "default": "3.0",
+      "search_range": "3-4"
+     },
+     {
+      "name": "MinSpacingPips",
+      "type": "double",
+      "default": "3.0",
+      "search_range": "2.5-4"
+     },
+     {
+      "name": "MaxSpacingPips",
+      "type": "double",
+      "default": "8.0",
+      "search_range": "6-10"
+     },
+     {
+      "name": "SpacingExpand",
+      "type": "double",
+      "default": "0.0",
+      "search_range": "0.0-0.5 step 0.25"
+     },
+     {
+      "name": "TPSigmaMult",
+      "type": "double",
+      "default": "0.6",
+      "search_range": "0.4-0.9 step 0.1"
+     },
+     {
+      "name": "TPCostMult",
+      "type": "double",
+      "default": "3.0",
+      "search_range": "3-4"
+     },
+     {
+      "name": "TPDepthShrink",
+      "type": "double",
+      "default": "0.15",
+      "search_range": "0.0-0.3"
+     },
+     {
+      "name": "CommissionPerLotRT",
+      "type": "double",
+      "default": "0 (standard) / 7 (raw)",
+      "search_range": "broker-specific"
+     },
+     {
+      "name": "SlipPips",
+      "type": "double",
+      "default": "0.2",
+      "search_range": "0.1-0.5"
+     }
+    ],
+    "backtestable_with_m1": "yes: computed from M1 closes only.",
+    "risk_notes": "Optimise only these multiples, not the ladder. If a multiplier's optimum sits at the edge of its range, treat that as overfitting. On a standard account (cost about 1.2 pip) the cost floors force TP to about 3.6 pips and spacing to about 3.6 pips or more. In quiet Asia that means the TP is set by cost, not by sigma."
+   },
+   {
+    "name": "M8. Cost-to-edge gate and per-order spread guard (applies to L1 AND every add)",
+    "priority": 8,
+    "what": "Immediately before every OrderSend (L1 or add), re-read SYMBOL_SPREAD and require all of:\n(a) spread_now <= SpreadMedMult x the rolling 60-min median spread (sampled every 10 s into a ring buffer);\n(b) spread_now <= MaxSpreadPts (absolute);\n(c) CostPips <= MaxCostToTP x TP0.\nIf a check fails, skip the add; do not queue it. The next M1 close re-evaluates.\nAt L1 only, also require the session's logged rolling net expectancy (M16) not to be negative.\nCheck SYMBOL_TRADE_STOPS_LEVEL / FREEZE_LEVEL before any TP modify.\nThe deployment requirement is documented in the inputs: AccountClass = STANDARD / RAW / CENT. The STANDARD defaults force wider TPs.",
+    "why": "Institutional grids and market makers earn the spread or a rebate; a retail grid pays it. Mende-Menkhoff: bank FX profits came from spread revenue, while speculation was not profitable within 30 min (https://www.olsendata.com/data_products/client_papers/papers/200606-MendeMenkhoff-ProfSpecIntraDayFxTrad.pdf). hftbacktest: 'Without alpha, this relies heavily on rebates' (https://raw.githubusercontent.com/nkaz001/hftbacktest/master/examples/High-Frequency%20Grid%20Trading%20-%20Comparison%20Across%20Other%20Exchanges.ipynb). GoldHedgerPro trades only if spread <= 15% of grid distance (https://raw.githubusercontent.com/zero-was-here/tradingbot/main/mt5_ea/GoldHedgerPro_v4.mq5). fx_hermes kill rule: gross edge < 2x cost means reject (https://raw.githubusercontent.com/pensebastian072/fx_hermes_trader/main/journal/B01_B02_POSTMORTEM.md). Re-check the spread right before each grid OrderSend (https://raw.githubusercontent.com/kwasati/KARL/master/lib/04-pitfalls.md). Raw-account costs are about $7/lot round trip (https://raw.githubusercontent.com/JCAMPanero23/JcampForexTrader/main/Documentation/SPREAD_VS_COMMISSION_BROKER_ANALYSIS.md). Our backtest: spread and swap made every structure negative.",
+    "ea_inputs": [
+     {
+      "name": "SpreadMedMult",
+      "type": "double",
+      "default": "1.5",
+      "search_range": "1.3-2.0"
+     },
+     {
+      "name": "MaxSpreadPts",
+      "type": "int",
+      "default": "16 (standard) / 5 (raw)",
+      "search_range": "broker-specific"
+     },
+     {
+      "name": "MaxCostToTP",
+      "type": "double",
+      "default": "0.33",
+      "search_range": "0.2-0.33"
+     },
+     {
+      "name": "AccountClass",
+      "type": "enum",
+      "default": "STANDARD",
+      "search_range": "STANDARD|RAW|CENT"
+     }
+    ],
+    "backtestable_with_m1": "approx: Oanda M1 is mid-only, so the simulator needs an hour-of-day spread profile (e.g. 1.1-1.4 pip standard, 0.1-0.3 + commission raw, 2.5-3x around rollover) plus random spikes. Final check on MT5 real ticks.",
+    "risk_notes": "This gate will probably disable most hours on a standard account. That is intended: it is the gate doing its job, not a bug."
+   },
+   {
+    "name": "M9. Volatility-expansion and jump circuit breaker (unscheduled shocks)",
+    "priority": 9,
+    "what": "Every M1 close compute ActRatio = mean(|r1m| over the last 15 bars) / mean(|r1m| over the last 1440 bars).\nBurst conditions:\n- |r1m| > BurstSigma x seasonal sigma1m; or\n- the 5-bar range > 3 x sigma1m x sqrt(5); or\n- spread > 2 x the same-hour 20-day median.\nState machine:\n(1) If ActRatio > ActRatioOn or a burst fires: block new L1 and all adds on both grids.\n(2) For open baskets: freeze adds and set the effective MaxHoldMin to min(MaxHoldMin, age + ShrinkHoldMin). TP and stop stay.\n(3) Resume when ActRatio < ActRatioOff for ResumeQuietMin consecutive minutes AND at least BurstFreezeMin has passed since the last burst.\n(4) For BurstWidenHours after a burst, multiply SpacingSigmaMult by 1.5.\nLog every trigger.",
+    "why": "Own statistics (inference, from the regime sweep on our Oanda M1 data): when ActRatio > about 2, the 30-min reversal after a 1-sd move flips sign. It goes from +0.42 to -0.29 pip at 12-16 UTC and from +0.30 to -0.93 at 17-20 UTC, with MAE p99 rising to 68-92 pips. S014 kill switch: realised vol above the 90th percentile means an event regime (https://raw.githubusercontent.com/xxSeasonxx/quant_research/main/docs/strategy_research/fx/catalog/data/results/S014_Bollinger_zscore.json). FX jumps self-excite, with clusters lasting 2.5-6 h (https://www.sciencedirect.com/science/article/pii/S2212567115007315). Market makers widen by the expected jump after bursts (https://oxford-man.ox.ac.uk/wp-content/uploads/2020/05/Algorithmic-Trading-Stochastic-Control-and-Mutually-Exciting-Processes.pdf). hftbacktest advises withdrawing in abnormal conditions (https://raw.githubusercontent.com/nkaz001/hftbacktest/master/docs/tutorials/Risk%20Mitigation%20through%20Price%20Protection%20in%20Extreme%20Market%20Conditions.ipynb). A filter that accidentally selects for volatility expansion 'adversely selected for the exact regime where mean reversion fails' (https://raw.githubusercontent.com/mubasharali24428-crypto/SUPER_TRADEMAN/main/ANTIGRAVITY.md).",
+    "ea_inputs": [
+     {
+      "name": "ActRatioOn",
+      "type": "double",
+      "default": "2.0",
+      "search_range": "1.7-2.5"
+     },
+     {
+      "name": "ActRatioOff",
+      "type": "double",
+      "default": "1.5",
+      "search_range": "1.2-1.7"
+     },
+     {
+      "name": "ResumeQuietMin",
+      "type": "int",
+      "default": "20",
+      "search_range": "15-30"
+     },
+     {
+      "name": "BurstSigma",
+      "type": "double",
+      "default": "4.0",
+      "search_range": "3.5-5"
+     },
+     {
+      "name": "BurstFreezeMin",
+      "type": "int",
+      "default": "90",
+      "search_range": "60-120"
+     },
+     {
+      "name": "BurstWidenHours",
+      "type": "int",
+      "default": "4",
+      "search_range": "2-6"
+     },
+     {
+      "name": "ShrinkHoldMin",
+      "type": "int",
+      "default": "10",
+      "search_range": "5-15"
+     }
+    ],
+    "backtestable_with_m1": "yes: M1 returns only. The spread-spike branch needs the modelled or real spread.",
+    "risk_notes": "The trigger reacts after the first impulse, so the first layer of a basket can still be caught. The stop covers that case. Keep the thresholds coarse to avoid fitting."
+   },
+   {
+    "name": "M10. Add pacing: adds only on closed M1 bars, minimum interval between adds, at most one add per bar",
+    "priority": 10,
+    "what": "Change the add trigger from 'any tick one spacing beyond the newest fill' to 'on the close of an M1 bar'. For BUY: close_bid <= newest_fill_ask - s_k AND seconds since the last add >= AddMinSec AND (if AddRequireStall) the bar's close > its low + 0.3 x its range (a stall rather than a full-body impulse). Execute at market on the next tick. At most 1 add per M1 bar per side. Mirror for SELL.\nAddMinSec scales with depth: AddMinSec x (1 + open_layers/MaxLayers).",
+    "why": "Re-entry loops can fill a whole ladder within seconds (https://raw.githubusercontent.com/freqtrade/freqtrade/develop/docs/strategy-callbacks.md). passivbot's adaptive entry cooldown grows with exposure and adverse movement (https://github.com/enarjord/passivbot/blob/master/docs/adaptive_entry_cooldown.md). Hummingbot filled_order_delay defaults to 60 s and the grid executor limits order_frequency (https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy/avellaneda_market_making/avellaneda_market_making_config_map_pydantic.py, https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy_v2/executors/grid_executor/grid_executor.py). Blessing SmartGrid delays adds while momentum runs (https://raw.githubusercontent.com/trderx/EA_MindStorms/master/EAs/Blessing.mq4). Alpha Capital flags 3 or more opens within 60 s (https://raw.githubusercontent.com/xaiolin17/RoundTrip/master/docs/compliance/research-2026/prop-firm-ea-constraints-2026.md). Inference: closed-bar adds also make the M1 simulator exact for add timing.",
+    "ea_inputs": [
+     {
+      "name": "AddOnBarClose",
+      "type": "bool",
+      "default": "true",
+      "search_range": "fixed true"
+     },
+     {
+      "name": "AddMinSec",
+      "type": "int",
+      "default": "90",
+      "search_range": "60-180 step 30"
+     },
+     {
+      "name": "AddRequireStall",
+      "type": "bool",
+      "default": "true",
+      "search_range": "true/false"
+     }
+    ],
+    "backtestable_with_m1": "yes, exactly: adds are decided on M1 closes and filled at the next bar open + spread + slippage.",
+    "risk_notes": "Slower adds give worse average prices in fast reversals, a small cost to edge. They also leave fewer layers filled when the stop or time barrier hits, which is the point."
+   },
+   {
+    "name": "M11. Shared inventory skew across the BUY and SELL grids (Avellaneda-Stoikov / GLFT applied to the two grids)",
+    "priority": 11,
+    "what": "q = buyLots - sellLots, read live from both magics; qn = q / MaxNetLots.\n(a) Hard: the heavy side (q > 0 means BUY) may not add if |q| + next_lot > MaxNetLots.\n(b) The heavy side's TP0_n is multiplied by (1 - SkewTP x min(1, |qn|)), floored at TPFloorPips.\n(c) The heavy side's next spacing is multiplied by (1 + SkewSpacing x min(1, |qn|)).\n(d) The light side is unchanged. In symmetric entry mode it keeps harvesting, which offsets q.\nRecompute after every fill. Each grid's SetTP still only modifies its own magic; it only reads the other grid's lots.",
+    "why": "AS reservation price r = s - q*gamma*sigma^2*(T-t) (https://people.orie.cornell.edu/sfs33/LimitOrderBook.pdf). GLFT closed-form skew with an inventory bound Q, where the risk-increasing side stops quoting at |q| = Q (https://arxiv.org/abs/1105.3115, https://raw.githubusercontent.com/nkaz001/hftbacktest/master/examples/GLFT%20Market%20Making%20Model%20and%20Grid%20Trading.ipynb). AS replications show the skew cuts inventory and P&L std to about 35-65% while keeping 70-100% of the mean (https://github.com/CloudWingsBD/AS_Model, https://github.com/iqueipopg/market-making, https://github.com/Seb-L-P/avellaneda-stoikov-market-maker). MQL5 AS article on EURUSD H1: inventory std down 70.8% (https://www.mql5.com/en/articles/23571). Hummingbot inventory skew (https://raw.githubusercontent.com/hummingbot/hummingbot/master/hummingbot/strategy/pure_market_making/inventory_skew_calculator.pyx). AS-Grid lockdown tiers for dual long/short grids (https://raw.githubusercontent.com/princeniu/AS-Grid/main/src/single_bot/gate_bot.py).",
+    "ea_inputs": [
+     {
+      "name": "MaxNetLots",
+      "type": "double",
+      "default": "0.03",
+      "search_range": "0.02-0.04"
+     },
+     {
+      "name": "SkewTP",
+      "type": "double",
+      "default": "0.4",
+      "search_range": "0.2-0.6 (pick the interior plateau)"
+     },
+     {
+      "name": "SkewSpacing",
+      "type": "double",
+      "default": "0.5",
+      "search_range": "0.3-0.8"
+     }
+    ],
+    "backtestable_with_m1": "yes: deterministic from simulated positions.",
+    "risk_notes": "Its main effect is lower variance; it is not a source of profit. In stretch mode (M12), usually only one grid is open, so the skew matters less. With 3 layers per side and 0.01-lot steps the effect is coarse."
+   },
+   {
+    "name": "M12. Entry trigger mode: optional stretch-and-reclaim start instead of 'open both grids on every bar'",
+    "priority": 12,
+    "what": "EntryMode: 0 = SYMMETRIC (v6 behaviour: on a new EntryTF bar, when idle and the gates pass, open both grids); 1 = STRETCH.\nIn STRETCH mode, on each closed M1 bar compute z = (close - EMA(close, ZEmaBars)) / sigma15.\nBUY grid L1 opens only if all of these hold:\n- z <= -ZEntry;\n- the just-closed bar is a reclaim (close > open, and close > the previous bar's low);\n- the trend veto passes: |sum of the last 60 r1m| / (sigma1m x sqrt(60)) < TrendTMax, and ADX(M15,14) < ADXMax with hysteresis to ADXMax - 5;\n- all M4-M9 gates pass.\nSELL mirrors this. The signal stays valid for SignalValidBars.\nThe two grids remain independent with separate magics: a SELL can start while a BUY is open if its own stretch fires, subject to M11.\nEntryTF applies to SYMMETRIC mode (M1 or M5).",
+    "why": "Our backtest: the unfiltered symmetric grid has about zero gross edge. Chen et al.: a plain grid has zero expected value (https://arxiv.org/abs/2506.11921, https://github.com/colachenkc/Dynamic-Grid-Trading). Stretch entries are used by Zerith (RSI plus lower BB), Hummingbot DMan V3 (BBP < 0), passivbot's EMA-band initial entries and GridPilot's trailing entry (https://raw.githubusercontent.com/BlamzKunG/My-Expert-Advisor/main/Experts/Zerith_Gold_Adaptive_MeanReversion_EA.mq5, https://raw.githubusercontent.com/hummingbot/hummingbot/master/controllers/directional_trading/dman_v3.py, https://raw.githubusercontent.com/enarjord/passivbot/master/docs/configuration.md, https://github.com/QuantiaAI/grid-pilot). Waka Waka uses BB-extreme starts but still had 2024 blowups, so this must sit under the hard stops (https://newyorkcityservers.com/blog/waka-waka-ea-review). Regime gating appears in martin-binance (ADX plus Mann-Kendall) and the BGC CUSUM/VolatilityGate (https://raw.githubusercontent.com/DogsTailFarmer/martin-binance/master/martin_binance/executor.py, https://www.mql5.com/en/articles/21833). Own statistics (inference): reversal after 1-3 sigma moves is only +0.15 to +0.5 pip gross, and moves beyond 3 sigma continue in London/NY. ADX, ER and VR only weakly time regimes (https://raw.githubusercontent.com/ahmetcanunaldi/mt5-automate-trading/master/EXPERIMENTS.md), so they are used here only as a veto.",
+    "ea_inputs": [
+     {
+      "name": "EntryMode",
+      "type": "enum",
+      "default": "1 (STRETCH)",
+      "search_range": "0|1 (A/B)"
+     },
+     {
+      "name": "EntryTF",
+      "type": "ENUM_TIMEFRAMES",
+      "default": "PERIOD_M1",
+      "search_range": "M1|M5"
+     },
+     {
+      "name": "ZEmaBars",
+      "type": "int",
+      "default": "90",
+      "search_range": "60-120 step 30"
+     },
+     {
+      "name": "ZEntry",
+      "type": "double",
+      "default": "1.5",
+      "search_range": "1.25-2.5 step 0.25"
+     },
+     {
+      "name": "SignalValidBars",
+      "type": "int",
+      "default": "3",
+      "search_range": "1-5"
+     },
+     {
+      "name": "TrendTMax",
+      "type": "double",
+      "default": "2.0",
+      "search_range": "1.5-2.5"
+     },
+     {
+      "name": "ADXMax",
+      "type": "double",
+      "default": "30",
+      "search_range": "25-35"
+     }
+    ],
+    "backtestable_with_m1": "yes: decisions on M1 closes, fills at the next bar open + spread. ADX(M15) is built from resampled M1.",
+    "risk_notes": "This is the main source of any edge, so it needs the strictest out-of-sample discipline. Expect a gross edge of a few tenths of a pip at best (inference). Stop at 3 filters in total to avoid stacking overfitted conditions."
+   },
+   {
+    "name": "M13. Session-level regime suitability test (offline variance ratio) that enables or disables each window",
+    "priority": 13,
+    "what": "Offline in the simulator and refreshed monthly. For each SessionWindow, compute the heteroskedasticity-robust, debiased Lo-MacKinlay VR(q) for q in {5, 15, 30} on 1-min mid returns over the last 120 trading days, excluding news windows.\nEnable the window only if VR(15) < 0.95 with z < -2 AND the window's median spread <= MaxCostToTP x the typical TP0. Write the result to the input SessionEnableMask.\nDo NOT compute Hurst or VR in real time on short windows inside the EA.",
+    "why": "The variance ratio is the right test of fadeability (https://raw.githubusercontent.com/bashtage/arch/main/arch/unitroot/unitroot.py). Recent EURUSD 15m VR(16) is about 0.92, borderline (https://raw.githubusercontent.com/nadav2/short-horizon-reversion/main/paper/out/robustness.json). Short-window R/S Hurst is biased to about 0.66 on a random walk (https://raw.githubusercontent.com/Anaji00/sentinel/main/shared/utils/quant_calc.py, https://raw.githubusercontent.com/rellis3/MacroFXModel/main/theory-lab/lessons/hurst-variance-ratio-micro.html). Avellaneda-Lee trade only fast mean reversion (https://traders.studentorg.berkeley.edu/papers/Statistical%20arbitrage%20in%20the%20US%20equities%20market.pdf). Own statistics (inference): VR30 is 0.54-1.05 by hour and news state.",
+    "ea_inputs": [
+     {
+      "name": "SessionEnableMask",
+      "type": "string",
+      "default": "1,0,0 (matches SessionWindowsUTC order)",
+      "search_range": "set by the offline test"
+     },
+     {
+      "name": "VRMaxToEnable",
+      "type": "double",
+      "default": "0.95",
+      "search_range": "0.90-0.97 (offline)"
+     }
+    ],
+    "backtestable_with_m1": "yes: offline statistic. Use only data before each walk-forward fold.",
+    "risk_notes": "Part of the measured VR < 1 comes from mid-quote noise. Confirm it with real bid/ask ticks where available."
+   },
+   {
+    "name": "M14. Execution robustness: rate-limited shared-TP modifies, a virtual TP fallback, snapshot-and-retry closes",
+    "priority": 14,
+    "what": "Keep the server-side shared TP (core), but:\n(a) Modify a position's TP only if |newTP - oldTP| >= 0.2 pip AND at least 30 s have passed since its last modify AND the freeze level allows it.\n(b) Every tick, check a virtual TP: if bid >= the BUY target (ask <= SELL), close the basket at market. This covers rejected or pending modifies and the MinHoldSec period.\n(c) Every basket close (TP fallback, stop, time, news, breaker) snapshots that magic's tickets, closes them by ticket with the correct filling mode (or CloseBy where possible), verifies the retcodes, and retries every 500 ms via OnTimer until the snapshot is empty. It waits rather than giving up while disconnected or the market is closed.\n(d) Log the spread, slippage and latency of each fill for M16.",
+    "why": "Basket Protective Close uses a ticket snapshot, 0.5 s retries, filling-mode handling and retcode checks (https://www.mql5.com/en/code/76518). Modify rejections near the freeze level and gap fills beyond the deviation (https://raw.githubusercontent.com/kwasati/KARL/master/lib/04-pitfalls.md). FTMO and The5ers server-request limits (https://raw.githubusercontent.com/xaiolin17/RoundTrip/master/docs/compliance/research-2026/prop-firm-ea-constraints-2026.md). Inference: v6's 'modify every position after every add' costs O(n^2) requests per basket, which becomes significant at high-frequency cycle counts.",
+    "ea_inputs": [
+     {
+      "name": "TPModifyMinPips",
+      "type": "double",
+      "default": "0.2",
+      "search_range": "0.1-0.5"
+     },
+     {
+      "name": "TPModifyMinSec",
+      "type": "int",
+      "default": "30",
+      "search_range": "10-60"
+     },
+     {
+      "name": "UseVirtualTP",
+      "type": "bool",
+      "default": "true",
+      "search_range": "fixed"
+     },
+     {
+      "name": "CloseRetryMs",
+      "type": "int",
+      "default": "500",
+      "search_range": "250-1000"
+     }
+    ],
+    "backtestable_with_m1": "n/a for the logic (an execution detail). The simulator should treat the TP as touched at bid/ask with prob_fill = 1 only if price trades through by 0.1 pip or more.",
+    "risk_notes": "A virtual TP closes at market, so it adds about 0.1-0.3 pip of slippage compared with a resting TP. Keep the server TP as the primary exit."
+   },
+   {
+    "name": "M15. Equity-based telemetry: DDR, per-cycle tail metrics, live cost drift",
+    "priority": 15,
+    "what": "Persist per-basket records: open time, close reason (TP / TP-decayed / time / stop / news / breaker / session-end), layers, lots, P/L net of all costs, MAE, realised spread and slippage.\nShow on the panel and alert on any of:\n- DDR = max equity DD / max balance DD > 2;\n- any basket loss > 1.2 x its planned Worst (model breach);\n- rolling 200-fill average cost > 1.5 x the model CostPips, which also blocks new grids until reviewed.",
+    "why": "Grids hide floating risk behind balance curves: DDR 5.72, with 79.97% equity DD vs 13.98% balance DD (https://www.mdpi.com/1999-4893/19/6/442). The Hidden Risk of Ruin auditor's payoff-asymmetry rule (https://www.mql5.com/en/articles/23673). S014 kill switch on slippage above 1.5x the model (https://raw.githubusercontent.com/xxSeasonxx/quant_research/main/docs/strategy_research/fx/catalog/data/results/S014_Bollinger_zscore.json). Markout as a toxic-flow detector (https://raw.githubusercontent.com/questdb/documentation/main/documentation/cookbook/sql/finance/markout.md).",
+    "ea_inputs": [
+     {
+      "name": "AlertDDR",
+      "type": "double",
+      "default": "2.0",
+      "search_range": "fixed"
+     },
+     {
+      "name": "CostDriftMult",
+      "type": "double",
+      "default": "1.5",
+      "search_range": "1.3-2.0"
+     },
+     {
+      "name": "CostDriftWindowFills",
+      "type": "int",
+      "default": "200",
+      "search_range": "100-300"
+     }
+    ],
+    "backtestable_with_m1": "yes: the same metrics come out of the simulator and are the acceptance criteria.",
+    "risk_notes": "Without this, a smooth balance curve can hide the tail until it hits."
+   },
+   {
+    "name": "M16. Self-disabling edge monitor per session window (Wilson lower bound vs break-even win rate)",
+    "priority": 16,
+    "what": "Per SessionWindow, over the last EdgeWindowBaskets baskets:\n- p_hat = share of baskets that are net winners;\n- W = average win and L = average loss, both net and realised (including time and stop exits);\n- p_be = L / (W + L);\n- p_LCB = Wilson 95% lower bound of p_hat.\nDisable the window (block new L1) if the rolling net expectancy < 0, or if p_LCB < p_be once at least 100 baskets are logged. Re-enable only by manual input. Never increase size from this statistic. Use it as a go/no-go gate only; it is not Kelly sizing.",
+    "why": "Kelly for negatively skewed payoffs is extremely sensitive to p. For W/L = 1/9, f* = 20% at p = 0.92 and 0 at p = 0.90 (inference). Thorp and MacLean-Thorp-Ziemba on overbetting (https://gwern.net/doc/statistics/decision/2006-thorp.pdf, https://webhomes.maths.ed.ac.uk/mckinnon/blackouts/StochOptFinanceAndEnergySpringer/Chap1_KellyZiemba.pdf). RegimeRouter keeps a per-regime Wilson-LB ledger (https://www.mql5.com/en/code/77535). Our breakeven arithmetic (inference): a 1-layer win of about $0.36 against a full stop of about $3.48 needs a basket win rate of about 90.6% or more.",
+    "ea_inputs": [
+     {
+      "name": "EdgeWindowBaskets",
+      "type": "int",
+      "default": "200",
+      "search_range": "100-300"
+     },
+     {
+      "name": "EdgeMinBaskets",
+      "type": "int",
+      "default": "100",
+      "search_range": "50-150"
+     }
+    ],
+    "backtestable_with_m1": "yes: run it inside the walk-forward to see how often it would have switched windows off.",
+    "risk_notes": "Statistical power is weak: separating p by about 1 pp takes about 3,000 baskets. Treat a trigger as a reason to stop, never a pass as proof of edge."
+   }
+  ],
+  "risk_framework": {
+   "max_loss_per_grid": "Per grid side, per cycle, the risk budget is RiskMoney = min(3.5% x Equity, 0.175 x (Equity - 0.80 x PeakEquity)). That is $3.50 at a $100 peak. It is enforced before the first fill by the pre-trade ladder simulation (M3), and the realised worst case is enforced by the fixed price stop at 3 x sigma15 from L1 (M2), with a broker-side SL on each ticket 3 pips beyond. The time barrier (M1) can only exit at a price better than the stop, so loss at the time stop <= loss at the price stop <= RiskMoney, except for gaps. Hard caps: 0.02 per position, 0.04 per side, 0.08 across both grids, 0.03 net, and a projected margin level of at least 300%.",
+   "daily_loss_limit": "6% of start-of-day equity ($6 on $100), measured on equity including floating P/L and both magics. It flattens both grids and blocks until the next day. Separately, at most 2 qualifying stops per day and at most 2 losing baskets per session window; after that, no new grids. Weekly limit 10% ($10). Hard kill at equity <= 80% of peak ($80): flatten, latch, manual restart.",
+   "exposure_caps": "At most 1 basket per side, and per-side layers <= MaxLayers (3, usually fewer after auto-fit). Lots: 0.02 per position, 0.04 per side, 0.08 in total, |buy - sell| <= 0.03. No adds after 15 min, during news, during a breaker state, or within 10 min of window end. Spread <= 1.5x the rolling median on every order. Leverage requirement (inference): EURUSD 0.01 lot is about EUR 1,000 notional, roughly $1,170 at 1.17 (the exact figure depends on the rate). At 1:500 that needs about $2.3 of margin, so 0.08 lots is about $19 and the margin level stays far above 300%. At 1:100, 0.04 lots on one side is about $47, a margin level of about 210%, so the margin check would trim the ladder to 2 layers. At 1:30 even 0.01 needs about $39, and the design does not fit a $100 standard account.",
+   "kill_switches": "(1) Per-basket: price stop, 30-min time stop, news flatten at T-5, session-end flatten, Friday flatten. (2) Breaker freeze on a volatility-expansion ratio > 2.0 or a jump (> 4 sigma1m, spread > 2x median): no new grids and no adds for >= 90 min, and open baskets get a shortened clock. (3) Daily 6%, 2 stops per day, weekly 10%. (4) CPPI floor: RiskMoney shrinks with the cushion above 0.8 x peak. Because of the 0.01 lot granularity, the EA effectively stops trading near equity of about $88 from a $100 peak, because no ladder fits any more. (5) Hard latch at 0.8 x peak. (6) Live cost drift > 1.5x the model, model breach (basket loss > 1.2x planned), or DDR > 2: block and alert. (7) Session self-disable when the rolling expectancy < 0 or the Wilson LB is below the break-even win rate. (8) Manual blackout calendar input (FOMC/ECB weeks, holidays).",
+   "worst_case_math_for_100usd": "Units: on EURUSD, 0.01 lot = $0.10 per pip, so 1 lot-pip of 0.01 = $0.10. Reference case: a standard account with 1.2 pip spread and no commission, in Asia with sigma15 = 4.0 pips. That gives spacing s = max(1.0 x 4.0, 3 x 1.4 cost) = 4.2, rounded to 4 for clarity. The stop is 3 x 4 = 12 pips from L1, and TP0 = max(0.6 x 4, 3 x 1.2) = 3.6 pips.\n\nLADDER A (the user's 'start 0.01, scale up', default): 0.01 at 0, 0.01 at -4, 0.02 at -8, stop at -12, all measured from L1.\n- Price loss at the stop: 0.01x12 + 0.01x8 + 0.02x4 = 0.12 + 0.08 + 0.08 = 0.28 lot-pips = $2.80.\n- Spread on 0.04 lots: 1.2 pip x 0.04 x $10 = $0.48.\n- Stop slippage of 0.5 pip: $0.20.\n- Worst case per side = $3.48 = 3.48% of $100. It just fits the 3.5% budget.\n\nLADDER B (flat, after auto-fit): 0.01 x 3 gives 0.12 + 0.08 + 0.04 = 0.24, i.e. $2.40 + $0.36 + $0.15 = $2.91.\n\nIn London (sigma15 = 6, stop 18 pips), Ladder A would be 0.18 + 0.12 + 0.12 = $4.20 + $0.68 = $4.88 and is rejected. Flat x3 is $3.60 + $0.51 = $4.11, also rejected. Auto-fit therefore trims to 0.01 x 2: 0.18 + 0.12 = $3.00 + $0.34 = $3.34, which is OK. This is why quiet sessions are the only ones where a 3-layer ladder fits.\n\nAT THE 30-MIN TIME STOP the loss is (current distance) x lots plus costs, which is always less than the stop loss: at most $3.48. The median is far smaller: own statistics put the Asia 30-min MAE p50 at about 2.2 pips (inference).\n\nWINS: a 1-layer TP nets 0.01 x 3.6 pips = $0.36; 2 layers 0.02 x 3.6 = $0.72; 3 layers 0.04 x 3.6 = $1.44, and less after the TP shrinks with depth and time. The break-even basket win rate against a full stop is about 3.48 / (3.48 + 0.36) = 90.6% for 1-layer wins. That is why edge, not risk control, is the binding question.\n\nPER DAY: one directional move can stop at most one side; the opposite grid is at or near its TP. Whipsaw worst case: a BUY stop then a SELL stop = 2 x $3.48 = $6.96. The 6% daily limit ($6) plus MaxStopsPerDay = 2 halts at about $6-7.\n\nGAP TAIL: a 20-pip gap through the broker SL on a full 0.04-lot side costs an extra 0.04 x 20 x $10 = $8, so the single-event worst case is about $11.5 (11.5%). The 30-pip SNB-style gap is about $15.5. M5 and M6 keep baskets out of scheduled jump windows, and weekends are flat.\n\nRUIN PATH: with the CPPI budget, from a $100 peak, consecutive full stops with no wins go:\n- $100, budget $3.50, 3 layers: lose $3.48, to $96.52.\n- Cushion $16.52, budget $2.89, 2 layers ($2.34): to about $94.2.\n- Budget $2.49, 2 layers: to about $91.8.\n- Budget $2.07, 1 layer ($1.37): to about $90.5, then $89.1, then $87.8.\n- At about $87.8 the cushion is $7.8, the budget $1.36 < $1.37, so no ladder fits and the EA stops opening grids.\nThat takes 6+ consecutive full stops; with the cap of 2 stops per day, 3 or more losing days in a row. The $80 latch is a backstop, mainly for gaps.\n\nSo a full blow-up (equity near $0) needs a broker or gap failure of more than about 8 x the designed basket loss. The realistic bad outcome is losing about 12-20% and being forced into review. Overall P(ruin) then depends mainly on whether net expectancy is positive, which the caps cannot ensure.\n\nCENT-ACCOUNT ALTERNATIVE (inference): with $100 = 10,000 cents, 0.01 lot is $0.001 per pip. The same 3.5% budget then allows real per-layer scaling, e.g. 0.10/0.20/0.30 cent-lot style ladders. That is the only way the 'scale up per layer' request can be met without breaking the budget."
+  },
+  "rejected_ideas": [
+   {
+    "idea": "Unbounded or geometric martingale (LotExponent 1.4-2.0, doubling, 'smart recovery' multipliers)",
+    "reason": "Loss grows exponentially with depth while the gain per cycle stays fixed. Doubling from 0.01 reaches 1.28 lots after 7 losers (https://www.mql5.com/en/blogs/post/773495). Ilan 8.0 had 88% DD in a live forward test (https://www.forexbrokerz.com/news/forex-review-ilan-ea-popular-martingale-russia). With a finite bankroll, optional stopping rules out long-run profit (https://en.wikipedia.org/wiki/Martingale_(betting_system)). Martingale on random signals 'looks' like 20%/yr with about 80% probability (https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4678427)."
+   },
+   {
+    "idea": "Keeping the v6.12 ladder (0.08 base, 18 layers, +0.07/layer, 8.0 max lots) or any per-layer increment beyond one 0.01 step on $100",
+    "reason": "The v6.12 ladder is 7.81 lots per side, about $78 per pip, i.e. a 1.3-pip adverse move costs 1% of a $100 account (inference). A +0.01/layer ladder grows as (N^3-N)/6: 6 layers at 3 pips = $10.50 at the last fill (https://www.mql5.com/en/code/76972, inference). Jurek-Yang favours linear, wealth-scaled inventory (https://raw.githubusercontent.com/hudson-and-thames/arbitragelab/master/docs/source/stochastic_control_approach/ou_model_jurek.rst). A linear soft martingale still had 80% equity DD (https://www.mdpi.com/1999-4893/19/6/442)."
+   },
+   {
+    "idea": "Open-ended holding / 'never sell at a loss' (spot-bot style)",
+    "reason": "It works only for unleveraged spot inventory (https://raw.githubusercontent.com/Drakkar-Software/OctoBot-Tentacles/master/Trading/Mode/grid_trading_mode/resources/GridTradingMode.md). It blew every $100 config in our backtest, and Taranto shows almost-sure ruin for unconstrained grids (https://www.mql5.com/en/articles/21833)."
+   },
+   {
+    "idea": "Recovery mode after a drawdown (re-entering at reduced size, raising size to win back losses)",
+    "reason": "It is the reverse of the drawdown-floor rule (https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1467-9965.1993.tb00044.x). GoldHedgerPro's 0.5x recovery baskets compound losses in trends (https://raw.githubusercontent.com/zero-was-here/tradingbot/main/mt5_ea/GoldHedgerPro_v4.mq5). On $100, 0.01 cannot be halved anyway. Halt and review instead."
+   },
+   {
+    "idea": "passivbot-style auto-unstuck / partial loss recycling, sliding (rolling) grid that closes the oldest layer and adds a new one, and cross-grid compensation closes",
+    "reason": "Each slide or unstuck realises a loss, and with roughly zero gross edge this only reshapes the distribution. passivbot itself warns it can 'keep taking losses and re-entering continually' (https://raw.githubusercontent.com/enarjord/passivbot/master/docs/risk_management.md). With a 30-min hard close it adds complexity for little benefit. Cross-grid compensation would break the user's SetTP isolation. Deferred: it may be tested later as a variant against the plain stop."
+   },
+   {
+    "idea": "Per-position stop loss on each layer",
+    "reason": "It defeats averaging, which is the core of the user's design. It is replaced by a basket stop fixed to L1, implemented as an identical broker SL on every ticket, so the per-ticket SL exists only as disconnect insurance (https://dspace.mit.edu/bitstream/handle/1721.1/114876/Lo_When%20Do%20Stop-Loss.pdf, https://github.com/OrchardForexTutorials/220403_stop_loss_grid)."
+   },
+   {
+    "idea": "Real-time Hurst exponent or other short-window persistence switches as triggers",
+    "reason": "Short-window R/S Hurst reads about 0.66 on a random walk (https://raw.githubusercontent.com/Anaji00/sentinel/main/shared/utils/quant_calc.py). One repo saw H of about 0.88 everywhere (https://raw.githubusercontent.com/rellis3/MacroFXModel/main/theory-lab/lessons/hurst-variance-ratio-micro.html). VR is used offline per session instead (M13)."
+   },
+   {
+    "idea": "ML pattern filters on entries",
+    "reason": "Waka Waka's ML filter did not prevent deep drawdowns (https://www.mql5.com/en/market/product/66317). The MDPI ML filter still had 80% equity DD (https://www.mdpi.com/1999-4893/19/6/442). Entry filters cut frequency but do not bound loss, and they add many free parameters to a small-edge problem."
+   },
+   {
+    "idea": "Live Kelly sizing from the backtest win rate",
+    "reason": "For skewed payoffs f* collapses with a 1-2 pp error in p, and thousands of baskets are needed to pin p down (https://gwern.net/doc/statistics/decision/2006-thorp.pdf, inference). On $100 the lot step makes Kelly moot anyway. It is kept only as a go/no-go gate (M16)."
+   },
+   {
+    "idea": "Trading the 20-23 UTC rollover / Asia-handover hours despite their strong measured VR (0.54-0.67)",
+    "reason": "Live spreads there have medians of 2.7 pips and spikes to 11-18 pips (https://raw.githubusercontent.com/ebadiamirhossein/sentinel/main/journal/M10b_SPIKE.md). Mid-price edge concentrated in that window is untradeable at retail (https://raw.githubusercontent.com/pensebastian072/fx_hermes_trader/main/journal/B01_B02_POSTMORTEM.md)."
+   },
+   {
+    "idea": "Basket trailing TP",
+    "reason": "For 1-30 min mean reversion, moves stall at the mean, so trailing usually lowers the average win (inference). It is not adopted. The time-decaying TP (M1) does the useful part, and trailing may be A/B tested later."
+   },
+   {
+    "idea": "Directional session-drift skew (EUR weak in the European morning / before fixes) and round-number layer placement (Osler)",
+    "reason": "Both are low-confidence, second-order effects, small relative to spread (https://ideas.repec.org/p/snb/snbwpa/2011-04.html, https://www.newyorkfed.org/medialibrary/media/research/staff_reports/sr125.pdf). They are deferred to v7.1, to be kept only if they survive walk-forward."
+   },
+   {
+    "idea": "Garleanu-Pedersen continuous inventory-target trading instead of fixed spacing",
+    "reason": "Theoretically appealing (http://www.nber.org/papers/w15205.pdf) but a different architecture from the user's layer grid. Deferred as a research variant."
+   },
+   {
+    "idea": "Mimicking institutional HF grids that rely on maker rebates (hftbacktest Binance setup)",
+    "reason": "Their profitability comes from a -0.005% rebate plus queue position (https://raw.githubusercontent.com/nkaz001/hftbacktest/master/examples/High-Frequency%20Grid%20Trading%20-%20Comparison%20Across%20Other%20Exchanges.ipynb). An MT5 retail market-order grid pays spread on every fill, so higher frequency only means more cost."
+   }
+  ],
+  "validation_plan": [
+   "Step 0: cost model before anything else. Build an hour-of-day spread profile for the target account (STANDARD and RAW), plus commission, plus slippage on stops and time exits of 0.5 pip (more in breaker states). Apply it to the Oanda M1 mid data. Gate: in the target windows, the gross reversal after the M12 trigger must be at least 2x the all-in round-trip cost in at least 6 of 8 years, or the design is rejected for that account type (fx_hermes kill rule).",
+   "Simulator rules (M1 event-driven):\n- Decisions (L1, adds, breakers) on M1 closes; fills at the next bar open +/- half-spread + slippage.\n- TP only if the bar trades through it by 0.1 pip or more.\n- Pessimistic intrabar ordering: if both stop and TP, or add and TP, lie inside one bar, the adverse event happens first.\n- Time exit at the open of the first bar where age >= MaxHoldMin.\n- Equity marked at each bar's worst price for the breakers.\n- News from the project CSV with the same DST rule as the EA.",
+   "Build order (implement and test in the M1-M16 priority sequence):\n- M1-M4 must show bounded per-cycle loss: no basket worse than 1.2x its planned Worst, outside identified gap events.\n- Then add M5-M10 and measure the change in stop frequency and expectancy.\n- Then add M11-M12 as A/B tests: EntryMode 0 vs 1, skew on vs off.",
+   "Optimise only: SpacingSigmaMult, TPSigmaMult, BasketStopSigma, ZEntry, NoAddAfterMin, TPDecayStartMin and the on/off state of the session windows. Keep the ladder, caps and breaker thresholds fixed at their risk-derived defaults (MQL5 forum consensus: do not optimise the grid ladder, https://www.mql5.com/en/forum/192936). Use TPE with at most about 150 trials and prefer interior plateaus.",
+   "Walk-forward: yearly folds 2012 to 2020.05 (train 2 years, test 1, rolling). The 2014-07 to 2015-03 trend, 15 Jan 2015 SNB, 24 Jun 2016 Brexit and Mar 2020 COVID are mandatory stress windows. All must appear in test folds.",
+   "Acceptance criteria, all must pass in every OOS fold:\n- net PF > 1.15 after costs;\n- max equity DD <= 20%;\n- DDR <= 2;\n- worst basket <= 1.2x its planned Worst;\n- average loss / average win <= 6, because the design deliberately has small TPs, but the Wilson LB of the basket win rate must be above p_be;\n- daily-limit hits <= 2 per month;\n- no kill-latch hit outside gap events;\n- WFE >= 0.5.\nReport how many baskets ended on TP, decayed TP, time stop, price stop, news, breaker and session end.",
+   "Robustness:\n- Monte Carlo with spread x1.25/x1.5 and slippage x2;\n- bootstrap of basket P&L blocks, requiring P(equity DD > 20% within 1 year) < 5%;\n- parameter-neighbourhood test: +/-20% on each optimised parameter keeps PF > 1.05.",
+   "MT5 confirmation:\n- run the final candidates in the Strategy Tester with 'Every tick based on real ticks' on the target broker's history (quality >= 99%), with commission set, Random delay on and the CSV news calendar;\n- also run in 1-minute OHLC mode. If OHLC looks better than real ticks, mark the candidate timing-fragile and reject it;\n- check that simulator and MT5 basket counts and P&L agree to within about 10%.",
+   "Live forward: start on a cent account on the same broker and server, for at least 8 weeks or 300+ baskets. Compare the live per-basket P&L, cost and slippage with the simulator, and require the M15 cost drift < 1.5x. Move to a $100 standard or raw account only if the live Wilson LB of the win rate is above the live break-even win rate and net expectancy is positive.",
+   "Ongoing: monthly re-run of M13 VR per window and M16 edge monitor. Re-validate yearly, since night-session edges have decayed elsewhere. Any kill-latch event means a full re-validation before re-arming."
+  ],
+  "open_questions": [
+   "Which account will this run on: a STANDARD (about 1.2 pip spread), RAW/ECN (about 0.1 pip + $7/lot) or CENT account, and at what leverage? At 1:30 the design cannot run on $100 standard. At 1:100 the margin check trims to 2 layers per side. Below about 1:200 a cent account is effectively required.",
+   "What is the broker server's GMT offset and DST convention? Session windows, rollover blackout and the news CSV all depend on it, and TimeGMT() is unreliable in the tester.",
+   "Is the user willing to accept that on $100 standard 'scale up per layer' collapses to at most one 0.01 step (0.01/0.01/0.02), and often to flat 0.01 x 2 after auto-fit? Real per-layer scaling needs a cent account.",
+   "Does a gross edge exist at all after costs? Our M1 statistics say +0.15 to +0.5 pip gross reversal against 0.8-1.4 pip cost. If Step 0 of the validation plan fails for the chosen account, the honest answer is not to trade it live, however good the risk controls are.",
+   "Our data is Oanda M1 mid only. Can real bid/ask tick history from the target broker be obtained for 2018-2020 at least, to check the spread model and the VR < 1 readings (part of which may be quote noise)?",
+   "How complete is the project's historical news CSV, especially for tier-1 events and unscheduled ECB/Fed headlines before 2016?",
+   "Does the broker's client agreement restrict scalping, HFT or 'abusive' high-frequency modifies? This determines whether MinHoldSec 120 and the TP-modify rate limit are sufficient."
+  ]
+ },
+ "critique": {
+  "issues": [
+   {
+    "target": "M7 + M8(c): TP cost floor vs the MaxCostToTP gate",
+    "problem": "With the defaults, the cost-to-edge gate blocks every basket whose TP comes from the cost floor. CostPips = 1.2 spread + 0 commission + 0.2 SlipPips = 1.4, so TP0 = max(0.6*sigma15, 3*1.4 = 4.2). The gate needs CostPips <= 0.33*TP0, and at the floor 0.33*4.2 = 1.386 < 1.4, so it fails. That happens whenever TPCostMult = 3 and MaxCostToTP < 1/3. A basket passes only when 0.6*sigma15 >= 1.4/0.33 = 4.24, which means sigma15 >= about 7.1 pips. The default Asia window has sigma15 of about 3.4-6, so it never trades on a STANDARD account. The only hours that pass are the high-volatility ones, e.g. 14 UTC at sd15 = 8.8, which is where the design's own statistics say moves beyond 3 sigma keep going. A RAW account (cost about 1.1) still needs sigma15 >= about 5.6. The gate pushes trading into the worst regime (inference, arithmetic from the design's own defaults).",
+    "severity": "critical",
+    "fix": "Make the parameters consistent: require MaxCostToTP >= 1/TPCostMult, or define the gate on the sigma-based TP before the floor is applied, i.e. require 0.6*sigma15 >= CostPips/MaxCostToTP. If no sigma-based TP clears the cost, skip the window. Then state the result plainly: on STANDARD the Asia window is untradeable by construction. Add an assertion that rejects the input set at OnInit when the floor TP cannot pass the gate."
+   },
+   {
+    "target": "M2(c) + M3 + M7: the user's 'start 0.01, scale up per layer' (Ladder A)",
+    "problem": "The headline worst-case example is not what the EA would compute. It rounds spacing from 4.2 down to 4 'for clarity' and uses sigma15 = 4, which breaks the 4.2-pip cost floor. With the real s = 4.2 and stop = 12, L3 at -8.4 sits 3.6 pips from the stop, less than MinStopGapSpacing*s = 4.2, so M2(c) gives floor((12-4.2)/4.2)+1 = 2 layers. More generally, L3 needs stop >= 3s, i.e. 3*sigma15 >= 3*max(sigma15, 4.2), so sigma15 >= 4.2. Ladder A's worst case is then 0.07*sigma15 lot-pips*$10 + $0.68 >= $3.62 at sigma15 = 4.2, and it rises with sigma. That always exceeds the $3.50 budget. With BasketStopSigma at 3.5 the minimum is again $3.62. So under the defaults on STANDARD there is no volatility level at which the 0.01/0.01/0.02 scale-up passes both M2(c) and M3 (inference, arithmetic).",
+    "severity": "critical",
+    "fix": "Redo the worked example with the exact formulas, no rounding, and tell the user that per-layer scale-up is infeasible on $100 STANDARD. Either drop Ladder A from the defaults (flat 0.01 x 2-3) or move to a cent account. Add a unit test that runs the M3 planner over a sigma15 grid of 2-10 pips and prints the ladder it produces."
+   },
+   {
+    "target": "M10 add trigger vs M3 planned ladder geometry",
+    "problem": "M10 triggers a BUY add when close_bid <= newest_fill_ask - s and then fills at the ask, which is about bid + spread. The real spacing between fills is therefore s - spread, about 2.8 pips with s = 4 and spread 1.2, not s. v6 compared ask with ask. M3 plans price_k = L1 - (k-1)*s, so planned and actual ladders differ. Redoing Ladder A with the compression: L1 at 0, L2 at -2.8, L3 at -5.6 (ask), stop at bid -12 plus 0.5 slip. The loss is 0.01*12.5 + 0.01*9.7 + 0.02*6.9 = 0.36 lot-pips = $3.60, above the 3.5% budget. M2(c) is also checked on the wrong prices. The 'Worst' budget is understated (inference).",
+    "severity": "major",
+    "fix": "Trigger on the same price side as the fill (BUY: close_ask <= last_fill_ask - s, i.e. close_bid + modelled spread). Alternatively, define spacing between fill prices and have M3 simulate the exact trigger-to-fill mapping, including next-bar-open slippage. Add a check that realised fill spacing is at least 0.9*s."
+   },
+   {
+    "target": "Risk framework: 'loss at time stop <= loss at price stop <= RiskMoney'",
+    "problem": "Worst omits BrokerSLBufferPips. If the virtual stop fails (VPS or terminal down, which is the stated reason for the broker SL), the fill is 3 pips beyond StopPx. On a 0.04-lot side that adds $1.20, so $3.48 becomes $4.68 (4.7%). The bid-trigger compression above also breaks the inequality. The pre-trade check also uses spread_now at L1, while adds are guarded only at 1.5x the median, so adds can fill with up to 50% more spread than the plan assumed (inference).",
+    "severity": "major",
+    "fix": "Include the broker buffer in Worst (Worst_disconnect = Worst + lots*BrokerSLBufferPips*PipValue), or put the broker SL at StopPx and the virtual stop 0.5 pip inside it. Budget each add at SpreadMedMult x median spread, not spread_now."
+   },
+   {
+    "target": "Rejected ideas: v6.12 ladder arithmetic",
+    "problem": "Wrong by a factor of about 100. The v6.12 side is 0.40 + (13*0.08 + 0.07*91) = 7.81 lots, which is $78.1 per pip. A 1.3-pip adverse move costs about $101.5, i.e. the whole $100 account, not '1%'. One percent of the account is about 0.013 pip. The text understates the danger of the user's live settings (inference, arithmetic).",
+    "severity": "major",
+    "fix": "Correct it to: 'v6.12 at full depth is $78/pip per side; a 1.3-pip move wipes out a $100 account; 1% of equity = 0.013 pip.' Make this the opening point of the explanation to the user."
+   },
+   {
+    "target": "M3 risk budget vs M4 daily limit and concurrent sides",
+    "problem": "The budget is per side (3.5%) and does not look at the other side or at the daily allowance left. In SYMMETRIC mode both grids can be at full risk at once, 7%, against a 6% daily limit. After the first stop of the day (-$3.48) the remaining daily allowance is $2.52, but CPPI still allows a $2.89 basket, so the daily breaker cuts that basket mid-flight at a market price. The 'about $6-7' daily worst case is therefore enforced by a flatten at market, not by the design (inference).",
+    "severity": "major",
+    "fix": "Set RiskMoney_side = min(MaxBasketRiskPct*E, CPPI cushion, DailyRemaining - OtherSideOpenWorst, WeeklyRemaining - OtherSideOpenWorst). Add an account-level aggregate Worst across both magics that has to fit before any L1 or add."
+   },
+   {
+    "target": "M11 MaxNetLots vs MaxLotsPerSide in STRETCH mode (the default EntryMode=1)",
+    "problem": "In STRETCH mode usually only one grid is open (the design says so). A full Ladder A side is 0.04 lots, so |q| = 0.04 > MaxNetLots = 0.03 and L3 is always blocked. MaxLotsPerSide = 0.04 and the Ladder A default cannot be reached; the actual cap is 0.03. In SYMMETRIC mode, |q| can also exceed 0.03 after the light side takes profit, because the rule only checks adds (inference).",
+    "severity": "minor",
+    "fix": "Pick one binding cap: MaxLotsPerSide = MaxNetLots = 0.03, or derive both from the M3 budget. Document that the net cap is a pre-add check only."
+   },
+   {
+    "target": "M1(e) MinHoldSec + M14(b) virtual TP",
+    "problem": "The two contradict each other. MinHoldSec is meant to keep every position clear of 'tick-scalping' duration rules, but the virtual TP closes the basket at market during the MinHoldSec window. A layer added 10 s before the virtual TP hits is closed after 10 s. Prop-firm rules, as the design itself cites them (https://raw.githubusercontent.com/xaiolin17/RoundTrip/master/docs/compliance/research-2026/prop-firm-ea-constraints-2026.md), count per-position duration, not basket age.",
+    "severity": "minor",
+    "fix": "Block every non-risk TP close (virtual or server) until the NEWEST position is at least MinHoldSec old. Only stop, time, news and breaker exits may override it. Also consider not adding within MinHoldSec of a TP-proximate price."
+   },
+   {
+    "target": "M1(c) TP decay + M14(a) modify rate limit (server request budget)",
+    "problem": "A TP decaying from 4.2 to 0.3 pips over 20 min moves about 0.2 pip/min. With the 0.2-pip/30-s throttle, that is about one modify per ticket per minute. Three tickets over 20 minutes is about 60 modifies per basket, roughly 9 baskets per window and two sides. That is hundreds of modifies per day, which brings back the request-budget problem M14 was meant to solve (inference).",
+    "severity": "minor",
+    "fix": "During the decay phase, freeze the server TP at its last value and let the virtual TP carry the decayed target. Use server modifies only after fills, or as a coarse step at most every 5 min."
+   },
+   {
+    "target": "TPFloorPips claim 'net profit above break-even'",
+    "problem": "This holds only on STANDARD accounts. On RAW, commission ($7/lot RT, about 0.7 pip per https://raw.githubusercontent.com/JCAMPanero23/JcampForexTrader/main/Documentation/SPREAD_VS_COMMISSION_BROKER_ANALYSIS.md) is not in the VWAP. VWAP + 0.3 pip then nets about -0.4 pip, so the decayed and depth-shrunk TPs are losing exits that get logged as TP wins.",
+    "severity": "minor",
+    "fix": "Set break-even = VWAP +/- CommissionPerLotRT/PipValuePerLot and floor = break-even + TPFloorPips. Label decayed-TP exits by their net P/L, not by exit type."
+   },
+   {
+    "target": "Session windows / news filter in the default Asia window",
+    "problem": "The default 00:30-05:00 UTC window contains USD-relevant scheduled flows that a filter limited to EUR/USD currencies misses. The Tokyo fix at about 00:55 UTC is one; the cited Krohn et al. fix study (https://onlinelibrary.wiley.com/doi/full/10.1111/jofi.13306) names the Tokyo fix explicitly, yet only the London and ECB fixes are blacked out. Others (inference) include the PBoC CNY fix (about 01:15 UTC), China data (01:30-02:00), and RBA and BoJ decisions (about 03:00-05:30). Holiday-thin Asia sessions are also missing, such as Japan Golden Week, Christmas and New Year; the 2019-01-03 flash crash happened in thin early Asia (inference).",
+    "severity": "major",
+    "fix": "Add a Tokyo-fix blackout from 00:45 to 01:05 UTC, a CNY-fix blackout, and JPY/CNY/AUD high-impact events to the Asia news filter. Add a holiday calendar with automatic blackouts for JP, CN, US and UK holidays and 24 Dec to 2 Jan."
+   },
+   {
+    "target": "Validation plan: data snooping and an out-of-sample window that does not exist",
+    "problem": "The default thresholds come from the design's own regime sweeps on the same Oanda 2012-2020.05 sample that the walk-forward will 'test': ActRatio 2.0, the 3-sigma stop, VR cut-offs, the session windows, and the London-open veto. The walk-forward is therefore not out of sample. The data also ends in May 2020, before the 2022-23 regime in which the design's own citation says a night scalper turned negative (https://www.mql5.com/en/market/product/66358). There are about 93 inputs across M1-M16, three windows and two entry modes, and no multiple-testing adjustment.",
+    "severity": "critical",
+    "fix": "Freeze every threshold using only 2012-2016. Keep 2017-2020.05 as a single untouched holdout, and buy or download broker tick or M1 data for 2020.06-2026 as a second holdout; no decision may use it until a final pass/fail run. Count all configurations tried and report a deflated Sharpe or White's Reality Check. Cut the exposed inputs to fewer than 20 and hard-code the rest."
+   },
+   {
+    "target": "M16 edge monitor (Wilson LB vs p_be)",
+    "problem": "For a skewed payoff the test cannot pass at the stated sample sizes. With W/L about 1/9 (p_be about 0.906) and a true p = 0.92, the Wilson 95% lower bound is about 0.850 at n = 100 and about 0.874 at n = 200, both below p_be. A strategy with real edge gets disabled almost surely, which invites the user to switch the monitor off (inference, Wilson arithmetic).",
+    "severity": "major",
+    "fix": "Replace it with a one-sided test on net per-basket P&L: block-bootstrap or HAC t-stat on mean net P&L, or an SPRT of mean > 0 vs mean < 0. Disable the window on a significantly negative mean or a 3-sigma drawdown versus the backtest distribution, not on failure to prove a positive edge."
+   },
+   {
+    "target": "Gap-tail worst case (SNB '30-pip' scenario)",
+    "problem": "A '30-pip SNB-style gap' on EURUSD probably understates the 15 Jan 2015 event. EURUSD fell on the order of 200 pips within minutes (inference, unverified; it happened at about 09:30 UTC, outside the Asia window). Asia flash events such as 2019-01-03 also produced tens of pips of slippage on stops (inference). At 0.04 lots, a 200-pip slip is $80, which is near ruin. That contradicts 'full blow-up needs more than 8x the designed basket loss'; the 8x figure is not derived anywhere.",
+    "severity": "major",
+    "fix": "Stress test at 100, 200 and 300 pips of stop slippage on the maximum concurrent exposure (both sides). State P(ruin | gap) explicitly and size MaxTotalLots so a 200-pip gap costs <= 25% of equity: 0.08 lots x 200 pips = $160 fails that, and <= 0.0125 lots passes. Mark the gap claim as inference and verify it against tick data."
+   },
+   {
+    "target": "Broker rules",
+    "problem": "These are not covered. (1) US/NFA accounts ban hedging and enforce FIFO, so the dual-magic BUY+SELL design cannot run there (inference). (2) Under ESMA 1:30 the design cannot run, which the design does note. (3) MT5 hedged-margin settings vary by broker; some charge full margin on both legs and some charge none (inference). (4) Cent accounts usually come with STANDARD-type spreads, often wider, so 'cent or raw' is not one option and a cent account does not fix the cost problem (inference). (5) Stop-out levels (often 20-50% margin level) and last-look rejects on market-execution brokers are not modelled.",
+    "severity": "major",
+    "fix": "Add an OnInit broker-compatibility check: ACCOUNT_MARGIN_MODE must be HEDGING, report SYMBOL_MARGIN_HEDGED, leverage, stop-out level, stop and freeze levels, and the commission field. Refuse to run if any of them breaks the assumptions. Measure cent-account spreads on the actual broker before treating it as the fix."
+   },
+   {
+    "target": "Simulator realism on mid M1 data",
+    "problem": "Several things cannot be reproduced honestly on Oanda mid M1. (a) Broker-side SLs and virtual stops trigger on bid/ask, and Asia and post-rollover spread spikes can hit the stop while the mid never reaches it. A modelled hour-of-day spread misses the spike-plus-move coincidence. (b) Exits at a market price on fast bars. (c) Requotes and rejects. (d) Using the bar's worst price for both grids at once is overly pessimistic for the breakers (minor). (e) VR < 1 in mid quotes may partly be quote staleness, as the design itself says (inference).",
+    "severity": "major",
+    "fix": "Make MT5 real-tick results from the target broker the gate, not a confirmation step. Use Oanda M1 only for coarse screening. Add a spread-spike Monte Carlo correlated with |r1m| (spikes are more likely on big bars) and a reject probability per order."
+   },
+   {
+    "target": "Overall premise / edge claim",
+    "problem": "The design admits gross edge of +0.15 to +0.5 pip against 0.8-1.4 pip of cost. Under a driftless walk, optional stopping implies expected basket P&L = -(spread + commission + slippage) x lots whatever the barriers or the ladder. All 16 modules reshape the distribution: lower variance, fewer blow-ups, slower losses. None of them adds expectancy. The stated 'lose at most 12-20%, then stop' is the expected outcome, not the tail (inference; Kaminski-Lo on stops under a random walk: https://dspace.mit.edu/bitstream/handle/1721.1/114876/Lo_When%20Do%20Stop-Loss.pdf).",
+    "severity": "critical",
+    "fix": "Run Step 0 first, before writing M1-M16. Measure the M12 trigger's gross markout at 5/15/30 min per hour and per year on bid/ask data. Build nothing else unless it is at least 2x all-in cost in at least 6 of 8 years. Tell the user plainly that the risk framework makes the EA survivable, not profitable."
+   },
+   {
+    "target": "M3 equity scaling + CPPI peak definition",
+    "problem": "(a) EquityPerBaseLot 150-300 at $100 equity gives floor(100/150)*0.01 = 0, so BaseLot is 0 and the EA never trades. (b) PeakEquity is a high-water mark on floating equity, so an open basket that floats +$1.44 and is then stopped raises the peak. The CPPI cushion then shrinks by more than the realised loss, a ratchet that cuts the budget faster than intended. (c) sigma15 is clamped at 1.5x prior, so in a real 3x volatility spike the stop is about 1.5 true sigma, not 3 sigma; the '3 sigma' description is wrong exactly when it matters (inference).",
+    "severity": "minor",
+    "fix": "(a) BaseLot = max(VolumeMin, floor_to_step(...)). (b) Update PeakEquity only when both grids are flat, or use the balance HWM. (c) Compute the stop from the unclamped sigma15 and refuse L1 when the clamp binds, letting M9 handle it."
+   }
+  ],
+  "missing": [
+   "A full expectancy model: simulate the exact barrier set (TP, decayed TP, time stop, price stop) on a driftless walk and on bootstrapped real returns, and report per basket the share of exits by type, the mean net P&L and the cost drag. The 90.6% break-even win rate only compares against full stops and is misleading.",
+   "An account-level aggregate worst case across both magics, coupled to the remaining daily and weekly allowance.",
+   "Data after 2020.06 (2020-2026) and real bid/ask tick history from the target broker. Without these there is no true out-of-sample test and no test of the post-2022 regime.",
+   "An exact count of the exposed parameters (about 93 inputs) and of the configurations tried, with a multiple-testing correction (deflated Sharpe / White's Reality Check).",
+   "A broker-compatibility checklist enforced at OnInit: hedging vs netting/FIFO, hedged-margin mode, stop-out level, stop and freeze levels, commission structure, cent-account spread and execution type, and any scalping or minimum-hold clauses in the client agreement.",
+   "Asia-specific event coverage: Tokyo fix, CNY fix, BoJ, RBA and China data; and a holiday or thin-liquidity calendar.",
+   "A gap and slippage stress at 100-300 pips on maximum concurrent exposure, with an explicit P(ruin) per event.",
+   "A cent-account spread and execution measurement before cent is recommended as the fix.",
+   "Frequency estimate: realistic baskets per day in the 00:30-05:00 window with 30-min holds (at most about 9 per side). 'High frequency' is a misnomer, and the edge monitor needs several thousand baskets, i.e. years.",
+   "A unit-test harness that runs the M3 planner, M2(c) gap rule and M8 gate over a sigma15 x spread grid to prove the defaults ever produce a tradeable basket.",
+   "A clear message to the user that their requested per-layer lot scale-up cannot be done on a $100 standard account under any volatility, and that their live v6.12 settings can lose the whole account on a roughly 1.3-pip adverse move at full depth."
+  ],
+  "unsupported_claims": [
+   "'A 1.3-pip adverse move costs 1% of a $100 account' for the v6.12 ladder. It is an arithmetic error: 7.81 lots = $78/pip, so 1.3 pips is about $101, roughly 100% of the account (inference).",
+   "'Ladder A just fits the 3.5% budget at $3.48.' It depends on rounding spacing 4.2 down to 4 and on bid-trigger/ask-fill geometry that M10 breaks; the exact figure is $3.60-3.62, which fails (inference).",
+   "'Quiet sessions are the only ones where a 3-layer ladder fits.' With the 4.2-pip cost floor, sigma15 < 4.2 allows only 2 layers under M2(c), and the M8 gate blocks all of Asia anyway (inference).",
+   "'Loss at the time stop <= loss at the price stop <= RiskMoney, except for gaps.' It ignores BrokerSLBufferPips (+$1.20 on a disconnect) and the add-spacing compression.",
+   "'A full blow-up needs a broker or gap failure of more than about 8 x the designed basket loss.' The multiplier is not derived, and a plausible EURUSD 2015-style 200-pip slip on 0.04 lots is about $80 (inference, unverified).",
+   "'TPFloorPips is a net profit above break-even.' False on RAW accounts with commission.",
+   "'Every institutional and practitioner source bounds holding time.' An overgeneralisation; for example, Hummingbot's time_limit is a configurable, optional controller parameter, per the cited files.",
+   "'AS replications show the skew cuts inventory and P&L std to about 35-65% while keeping 70-100% of the mean.' It is drawn from student GitHub simulations (https://github.com/CloudWingsBD/AS_Model, https://github.com/iqueipopg/market-making), not from retail FX market-order grids, and does not transfer to a 3-layer, 0.01-step ladder.",
+   "'Dealer inventory half-life is about 10 min' (https://www.brandeis.edu/economics/RePEc/brd/doc/Brandeis_WP54.pdf). Not verified in this review; treat as unconfirmed.",
+   "'Alpha Capital and The5ers define abusive tick-scalping by sub-2-minute durations' and 'Alpha Capital flags 3+ opens within 60 s'. These come from third-party repositories (https://raw.githubusercontent.com/xaiolin17/RoundTrip/master/docs/compliance/research-2026/prop-firm-ea-constraints-2026.md, https://raw.githubusercontent.com/jonathantheja99/5ers-rag-dev/main/data/faq_data.md), not the firms' own rule pages. They are also of limited relevance to a $100 retail account, where broker rules apply instead.",
+   "'Saxo live EURUSD spreads' come from a personal GitHub journal (https://raw.githubusercontent.com/ebadiamirhossein/sentinel/main/journal/M10b_SPIKE.md), not from Saxo.",
+   "'These changes can turn blow-up into lose at most about 12-20%, then stop.' That holds only without gaps and assumes correct execution of virtual stops; with zero gross edge it is the expected path, not a worst-case bound.",
+   "The ActRatio, VR, 3-sigma-stop and session-window thresholds are presented as research-backed, but they come from in-sample sweeps on the same data the validation plan uses (inference)."
+  ],
+  "verdict": "REJECT AS SPECIFIED. Do not deploy, and do not start coding M4-M16 yet. The risk architecture points the right way: finite cycles, a hard time stop, an L1-anchored basket stop, a pre-trade budget, CPPI and breakers. But the defaults contradict each other, so the EA as written either never trades or cannot do what was claimed. (1) With TPCostMult = 3 and MaxCostToTP = 0.33, the cost gate fails every cost-floored basket, so the default Asia window never trades on STANDARD. Only hours with sigma15 >= 7 pass, which is the trending regime. (2) The user's 0.01/0.01/0.02 scale-up ladder cannot satisfy both the M2(c) stop gap and the 3.5% budget at any volatility on $100 STANDARD. The headline $3.48 depends on rounding spacing 4.2 down to 4. (3) M10's bid-trigger/ask-fill rule shrinks real spacing by a spread, and the worst case leaves out the broker-SL buffer, so the per-basket loss bound is understated by about 3-35%. (4) The rejected-ideas section understates the v6.12 ladder's danger by about 100x: at full depth, a 1.3-pip move wipes out a $100 account. (5) Validation is contaminated: thresholds were derived from the same 2012-2020 sample, nothing after May 2020 is available, about 93 inputs are exposed, and the Wilson edge monitor would switch off even a genuinely profitable skewed strategy. (6) Most important, the design's own numbers (+0.15 to +0.5 pip gross vs 0.8-1.4 pip cost) mean every module only reshapes a negative-expectancy distribution. Next step: run Step 0 (gross markout of the entry trigger vs all-in cost on bid/ask data that includes 2020-2026) before anything else. Fix the parameter contradictions with an OnInit consistency check and a unit-tested planner sweep. Couple the risk budget to the daily allowance left and to the other side's exposure. Tell the user plainly that on a $100 standard account the honest choice is a flat 0.01 x 2-layer basket or a cent account, and only if Step 0 shows real edge."
+ }
+}
