@@ -600,6 +600,9 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
             _time_stops(S, o[i], hs, p, ti, hold_sec)
         # ---- v7 peak-equity kill latch + daily loss limit (also re-checked at every waypoint)
         _acct_guards(S, o[i], hs, p, ti)
+        if S[KILL] > 0 and S[N0] + S[N1] == 0:
+            prev_c = c[i]
+            break  # latched and flat: nothing can happen any more, equity is frozen
         # ---- trading session window (server minutes, may wrap midnight)
         in_sess = True
         if sess_on:
