@@ -202,6 +202,49 @@ def test_v7_stretch_signal_has_no_lookahead():
     assert (s1 != 0).sum() > 0
 
 
+def test_review_hold_deadline_inside_leg_blocks_late_tp():
+    # L1 at 00:00:00; bar 1 rises to the BUY TP only at ~00:01:40 (O->L->H->C waypoints 0/20/40/59 s).
+    # MaxHoldSec=90 expires at 00:01:30, mid-leg, so the TP must NOT be credited.
+    bars = [(1.10000, 1.10000, 1.10000, 1.10000), (1.10000, 1.10060, 1.10000, 1.10060)]
+    p = bt.make_params(BaseLot=0.01, GridSpacingPts=500, TP_Pips=5, MaxLayers=1, MaxHoldSec=90, **ZERO_COST)
+    r = bt.run(Synth(bars), p)
+    assert r["wins"] == 0 and r["time_stops"] == 2, r
+    assert r["max_hold_sec"] <= 90 + 1e-6, r
+
+
+def test_review_kill_latch_sees_realised_loss_while_flat():
+    # a 10-minute data gap jumps price 20 pips through the BUY stop: the $2 loss is realised at once
+    # (no floating crossing to catch), so only the flat-account check can fire the 0.15% kill latch
+    bars = [(1.10000, 1.10000, 1.10000, 1.10000)] + [(1.09800, 1.09800, 1.09800, 1.09800)] * 30
+    sy = Synth(bars)
+    sy.t = sy.t.copy()
+    sy.t[1:] += 540.0
+    p = bt.make_params(BaseLot=0.01, GridSpacingPts=500, TP_Pips=50, MaxLayers=1, StopPips=10, EntryTFMin=1,
+                       PeakKillPct=0.15, MaxTotalLots=0.01, **ZERO_COST)  # lots cap: BUY grid only
+    r = bt.run(sy, p)
+    assert r["side_stops"] == 1 and r["killed"] == 1, r
+    assert r["grids_opened"] == 1 and abs(r["final_balance"] - 998.0) < 1e-6, r  # nothing re-opens
+
+
+def test_review_kill_fills_at_exact_crossing():
+    # BUY grid only matters: SELL TP at -5 pips pays +$0.50, then the kill (0.5% of the $1000 peak = $995)
+    # must close at exactly the crossing price, not at the bar low.
+    bars = [(1.10000, 1.10000, 1.10000, 1.10000), (1.10000, 1.10000, 1.09000, 1.09000)]
+    p = bt.make_params(BaseLot=0.01, GridSpacingPts=5000, TP_Pips=5, MaxLayers=1, PeakKillPct=0.5, **ZERO_COST)
+    r = bt.run(Synth(bars), p)
+    assert r["killed"] == 1 and abs(r["final_balance"] - 995.0) < 1e-6, r
+
+
+def test_review_spread_change_crosses_stop():
+    import numpy as np
+    flat = (1.10000, 1.10000, 1.10000, 1.10000)
+    sy = Synth([flat, flat])
+    sy.spread = np.array([0.0, 40.0])  # bar 1: 4-pip spread, mid unchanged
+    p = bt.make_params(BaseLot=0.01, GridSpacingPts=500, TP_Pips=50, MaxLayers=1, StopPips=1, **ZERO_COST)
+    r = bt.run(sy, p)
+    assert r["side_stops"] == 2, r  # BUY bid and SELL ask both crossed their 1-pip stops
+
+
 def _as_data(sy):
     import numpy as np
     d = bt.Data.__new__(bt.Data)

@@ -38,6 +38,7 @@ PARAM_NAMES = [
     # v7 HF-grid modules (indices 48..)
     "MaxHoldSec", "NoAddAfterSec", "StopPips", "MaxBasketRiskPct", "AddMinSec", "PeakKillPct",
     "EntryMode", "ZEntry", "ZEmaBars", "TrendTMax",
+    "SpreadScale", "MktSlip",
 ]
 PI = {n: i for i, n in enumerate(PARAM_NAMES)}
 
@@ -55,6 +56,7 @@ EA_DEFAULTS = dict(
     DailyLossPct=0.0, PathPoints=0, PathSeed=1, UseSpreadProfile=0,
     MaxHoldSec=0, NoAddAfterSec=0, StopPips=0.0, MaxBasketRiskPct=0.0, AddMinSec=0, PeakKillPct=0.0,
     EntryMode=0, ZEntry=1.5, ZEmaBars=90, TrendTMax=2.0,
+    SpreadScale=1.0, MktSlip=0,
 )
 
 # EURUSD spread multiplier by SERVER hour (NY-close time): thin after rollover and late
@@ -120,7 +122,7 @@ def _lot_size(layer, p):
         lot = base + k * inc
     step = p[35]
     if step > 0:
-        lot = np.round(lot / step) * step
+        lot = np.floor(lot / step + 0.5) * step  # MathRound (half away from zero), as in the EA
     if lot < p[34]:
         lot = p[34]
     return np.round(lot, 2)
@@ -236,8 +238,19 @@ def _open(S, side, fill, lot, p, t):
         n = S[N1]
     if n > S[MAXN]:
         S[MAXN] = n
-    if n >= p[6]:
-        S[HITMAX] += 1
+
+
+@njit(cache=True)
+def _mkt(p):
+    """Adverse slippage for market orders (L1 opens and market exits) when MktSlip=1."""
+    return p[31] * p[37] if p[59] > 0 else 0.0
+
+
+@njit(cache=True)
+def _close_mkt(S, side, m, hs, p, t):
+    """Market exit of one side (TP exits never slip)."""
+    sl = _mkt(p)
+    return _close_side(S, side, (m - sl) if side == 0 else (m + sl), hs, p, t)
 
 
 @njit(cache=True)
@@ -262,157 +275,238 @@ def _try_add(S, side, m, hs, p, t):
     fill = (m + hs + slip) if side == 0 else (m - hs - slip)
     _open(S, side, fill, lot, p, t)
     S[LAYERS] += 1
+    if (S[N0] if side == 0 else S[N1]) >= (S[EFFML0] if side == 0 else S[EFFML1]):
+        S[HITMAX] += 1
     _set_tp(S, side, p)
     return True
 
 
 @njit(cache=True)
-def _loss_close(S, m, hs, p, t, is_stopout):
+def _loss_close(S, m, hs, p, t, kind):
+    """Account-level flatten. kind 0 = broker stop-out, 1 = basket (EmergencyCloseDD),
+    2 = peak-equity kill latch, 3 = daily loss limit."""
     for sd in range(2):
-        pnl = _close_side(S, sd, m, hs, p, t)
-        S[STOPLOSS] += pnl
-    if is_stopout:
+        S[STOPLOSS] += _close_mkt(S, sd, m, hs, p, t)
+    if kind == 0:
         S[STOPOUTS] += 1
-    else:
+    elif kind == 1:
         S[BASKETS] += 1
         S[HALT] = 1
         cd = p[13]
         S[HALT_UNTIL] = t + cd * 60.0 if cd > 0 else 1e18
+    elif kind == 2:
+        S[KILL] = 1
+    else:
+        S[DAYHALT] = 1
+        S[DAYSTOPS] += 1
 
 
 @njit(cache=True)
 def _thresholds(S, m, p, refcap):
-    """Return (basket_loss_threshold, stopout_loss_threshold) as positive $ of float loss."""
+    """Float-loss thresholds in $ (positive): stop-out, basket, kill latch, daily loss.
+    The combined float is linear in price between events, so each crossing is exact."""
+    x0 = 1e18
+    mg = _margin(S, m, p)
+    if mg > 0:
+        x0 = S[BAL] - p[26] / 100.0 * mg
     x1 = 1e18
     if p[11] > 0 and S[HALT] == 0:
         x1 = p[11] / 100.0 * refcap
-    mg = _margin(S, m, p)
     x2 = 1e18
-    if mg > 0:
-        x2 = S[BAL] - p[26] / 100.0 * mg
-    return x1, x2
+    if p[53] > 0 and S[KILL] == 0:
+        x2 = S[BAL] - S[PEAK] * (1.0 - p[53] / 100.0)
+    x3 = 1e18
+    if p[44] > 0 and S[DAYHALT] == 0 and S[DAYBAL] > 0:
+        x3 = S[BAL] - S[DAYBAL] * (1.0 - p[44] / 100.0)
+    return x0, x1, x2, x3
 
 
 @njit(cache=True)
-def _segment(S, a, bnd, hs, p, t, allow0, allow1, refcap):
-    """Walk mid price continuously from a to bnd, processing events in order."""
+def _add_level(S, side, lv, a, span, t0, t1, p):
+    """Apply the time gates (AddMinSec pacing, NoAddAfterSec cutoff) to an add trigger
+    at price lv inside a segment: returns the price where the add can happen, or NaN."""
+    tl = t0 if span == 0 else t0 + (t1 - t0) * (lv - a) / span
+    start = S[START0] if side == 0 else S[START1]
+    last = S[LASTADD0] if side == 0 else S[LASTADD1]
+    ta = tl
+    if p[52] > 0 and last + p[52] > ta:
+        ta = last + p[52]
+    if p[49] > 0 and ta >= start + p[49]:
+        return np.nan
+    if ta > t1 + 1e-9:
+        return np.nan
+    if ta > tl and t1 > t0:
+        return a + span * (ta - t0) / (t1 - t0)
+    return lv
+
+
+@njit(cache=True)
+def _segment(S, a, bnd, hs, p, t0, t1, allow0, allow1, refcap, hold_sec):
+    """Walk mid price continuously from a (time t0) to bnd (time t1), processing every
+    event in path order. Event time is interpolated linearly along the leg."""
     cs = p[27]
     step = p[4] * p[37]
     stop_d = p[50] * 10.0 * p[37]
     slip = p[31] * p[37]
     cur = a
     down = bnd < a
-    ok0 = allow0 and _adds_ok(S, 0, p, t)
-    ok1 = allow1 and _adds_ok(S, 1, p, t)
+    span = bnd - a
+    ok0 = allow0
+    ok1 = allow1
     for _ in range(10000):
+        te = t0 if span == 0 else t0 + (t1 - t0) * (cur - a) / span
         A, B = _lin(S, hs, cs)
-        x1, x2 = _thresholds(S, cur, p, refcap)
-        fl_cur = A * cur + B
-        # immediate loss triggers
+        x0, x1, x2, x3 = _thresholds(S, cur, p, refcap)
+        fl = A * cur + B
         if S[N0] + S[N1] > 0:
-            if fl_cur <= -x2:
-                _loss_close(S, cur, hs, p, t, True)
+            if fl <= -x0:
+                _loss_close(S, cur, hs, p, te, 0)
                 continue
-            if fl_cur <= -x1:
-                _loss_close(S, cur, hs, p, t, False)
+            if fl <= -x1:
+                _loss_close(S, cur, hs, p, te, 1)
                 continue
-        best = 0.0
-        ev = 0
-        if down:
-            best = -1e18
-            if ok0 and S[N0] > 0 and S[N0] < S[EFFML0]:
-                lv = S[LAST0] - step - hs
-                if lv > cur:
-                    lv = cur
-                if lv >= bnd - 1e-9 and lv > best:
-                    best = lv; ev = 1
-            if S[N1] > 0:
-                lv = S[TP1] - hs
-                if lv > cur:
-                    lv = cur
-                if lv >= bnd - 1e-9 and lv > best:
-                    best = lv; ev = 2
-            if S[N0] > 0 and stop_d > 0:
-                lv = S[FIRST0] - stop_d + hs  # BUY stop: bid <= L1 ask - StopPips
-                if lv > cur:
-                    lv = cur
-                if lv >= bnd - 1e-9 and lv > best:
-                    best = lv; ev = 5
-            if A > 0 and S[N0] + S[N1] > 0:
-                for k in range(2):
-                    x = x2 if k == 0 else x1
-                    if x < 1e17:
-                        ms = (-x - B) / A
-                        if ms >= bnd and ms <= cur and ms > best:
-                            best = ms; ev = 3 + k
-        else:
-            best = 1e18
-            if ok1 and S[N1] > 0 and S[N1] < S[EFFML1]:
-                lv = S[LAST1] + step + hs  # bid >= last + step
-                if lv < cur:
-                    lv = cur
-                if lv <= bnd + 1e-9 and lv < best:
-                    best = lv; ev = 1
-            if S[N0] > 0:
-                lv = S[TP0] + hs
-                if lv < cur:
-                    lv = cur
-                if lv <= bnd + 1e-9 and lv < best:
-                    best = lv; ev = 2
-            if S[N1] > 0 and stop_d > 0:
-                lv = S[FIRST1] + stop_d - hs  # SELL stop: ask >= L1 bid + StopPips
-                if lv < cur:
-                    lv = cur
-                if lv <= bnd + 1e-9 and lv < best:
-                    best = lv; ev = 5
-            if A < 0 and S[N0] + S[N1] > 0:
-                for k in range(2):
-                    x = x2 if k == 0 else x1
-                    if x < 1e17:
-                        ms = (-x - B) / A
-                        if ms <= bnd and ms >= cur and ms < best:
-                            best = ms; ev = 3 + k
-        if ev == 0:
-            _track(S, bnd, hs, cs)
-            return
-        cur = best
-        if ev == 1:
+            if fl <= -x2:
+                _loss_close(S, cur, hs, p, te, 2)
+                continue
+            if fl <= -x3:
+                _loss_close(S, cur, hs, p, te, 3)
+                continue
+        # levels already crossed at cur (a spread change, or the start of a leg)
+        if stop_d > 0 and S[N0] > 0 and cur <= S[FIRST0] - stop_d + hs + 1e-12:
             _track(S, cur, hs, cs)
-            side = 0 if down else 1
-            if not _try_add(S, side, cur, hs, p, t):
-                if side == 0:
-                    ok0 = False
-                else:
-                    ok1 = False
-            elif p[52] > 0:  # AddMinSec: at most one add per pacing interval
-                if side == 0:
-                    ok0 = False
-                else:
-                    ok1 = False
-        elif ev == 5:
-            side = 0 if down else 1
-            _track(S, cur, hs, cs)
-            fillm = (cur - slip) if side == 0 else (cur + slip)
-            S[STOPLOSS] += _close_side(S, side, fillm, hs, p, t)
+            S[STOPLOSS] += _close_side(S, 0, cur - slip, hs, p, te)
             S[SIDESTOPS] += 1
+            continue
+        if stop_d > 0 and S[N1] > 0 and cur >= S[FIRST1] + stop_d - hs - 1e-12:
             _track(S, cur, hs, cs)
-        elif ev == 2:
-            side = 1 if down else 0
-            pnl = _close_side(S, side, cur, hs, p, t)
+            S[STOPLOSS] += _close_side(S, 1, cur + slip, hs, p, te)
+            S[SIDESTOPS] += 1
+            continue
+        if S[N0] > 0 and cur - hs >= S[TP0] - 1e-9:
+            pnl = _close_side(S, 0, cur, hs, p, te)
             S[TPPROFIT] += pnl
             if pnl > 0:
                 S[WINS] += 1
             else:
                 S[LOSSES] += 1
             _track(S, cur, hs, cs)
+            continue
+        if S[N1] > 0 and cur + hs <= S[TP1] + 1e-9:
+            pnl = _close_side(S, 1, cur, hs, p, te)
+            S[TPPROFIT] += pnl
+            if pnl > 0:
+                S[WINS] += 1
+            else:
+                S[LOSSES] += 1
+            _track(S, cur, hs, cs)
+            continue
+        if hold_sec > 0:
+            if S[N0] > 0 and te - S[START0] >= hold_sec - 1e-6:
+                S[STOPLOSS] += _close_mkt(S, 0, cur, hs, p, te)
+                S[TIMESTOPS] += 1
+                continue
+            if S[N1] > 0 and te - S[START1] >= hold_sec - 1e-6:
+                S[STOPLOSS] += _close_mkt(S, 1, cur, hs, p, te)
+                S[TIMESTOPS] += 1
+                continue
+        if span == 0:
+            _track(S, bnd, hs, cs)
+            return
+        sgn = -1.0 if down else 1.0
+        best = 1e18          # distance travelled from cur to the event (smaller = earlier)
+        ev = 0
+        lvb = cur
+        # --- add trigger of the side being moved against
+        sd = 0 if down else 1
+        okk = ok0 if down else ok1
+        nn = S[N0] if down else S[N1]
+        if okk and nn > 0 and nn < (S[EFFML0] if down else S[EFFML1]):
+            lv = (S[LAST0] - step - hs) if down else (S[LAST1] + step + hs)
+            if sgn * (lv - cur) < 0:
+                lv = cur
+            lv = _add_level(S, sd, lv, a, span, t0, t1, p)
+            if not np.isnan(lv):
+                d = sgn * (lv - cur)
+                if d <= sgn * (bnd - cur) + 1e-9 and d < best:
+                    best = d; ev = 1; lvb = lv
+        # --- TP of the side moving in its favour
+        if down and S[N1] > 0:
+            lv = S[TP1] - hs
+            d = cur - lv
+            if d >= 0 and d <= cur - bnd + 1e-9 and d < best:
+                best = d; ev = 2; lvb = lv
+        if (not down) and S[N0] > 0:
+            lv = S[TP0] + hs
+            d = lv - cur
+            if d >= 0 and d <= bnd - cur + 1e-9 and d < best:
+                best = d; ev = 2; lvb = lv
+        # --- L1-anchored stop of the side moved against
+        if stop_d > 0:
+            if down and S[N0] > 0:
+                lv = S[FIRST0] - stop_d + hs
+                d = cur - lv
+                if d >= 0 and d <= cur - bnd + 1e-9 and d < best:
+                    best = d; ev = 5; lvb = lv
+            if (not down) and S[N1] > 0:
+                lv = S[FIRST1] + stop_d - hs
+                d = lv - cur
+                if d >= 0 and d <= bnd - cur + 1e-9 and d < best:
+                    best = d; ev = 5; lvb = lv
+        # --- account thresholds (exact crossing of a linear float)
+        if S[N0] + S[N1] > 0 and ((down and A > 0) or ((not down) and A < 0)):
+            for k in range(4):
+                x = x0 if k == 0 else (x1 if k == 1 else (x2 if k == 2 else x3))
+                if x < 1e17:
+                    ms = (-x - B) / A
+                    d = sgn * (ms - cur)
+                    if d >= 0 and d <= sgn * (bnd - cur) + 1e-9 and d < best:
+                        best = d; lvb = ms
+                        ev = 3 if k == 0 else (4 if k == 1 else (6 if k == 2 else 7))
+        # --- holding-time deadlines inside the leg
+        if hold_sec > 0 and t1 > t0:
+            for k in range(2):
+                if (S[N0] if k == 0 else S[N1]) > 0:
+                    tl = (S[START0] if k == 0 else S[START1]) + hold_sec
+                    if tl > te and tl <= t1:
+                        ml = a + span * (tl - t0) / (t1 - t0)
+                        d = sgn * (ml - cur)
+                        if d >= 0 and d < best:
+                            best = d; lvb = ml; ev = 8 + k
+        if ev == 0:
+            _track(S, bnd, hs, cs)
+            return
+        cur = lvb
+        te = t0 + (t1 - t0) * (cur - a) / span
+        _track(S, cur, hs, cs)
+        if ev == 1:
+            if not _try_add(S, sd, cur, hs, p, te):
+                if sd == 0:
+                    ok0 = False
+                else:
+                    ok1 = False
+        elif ev == 2:
+            side = 1 if down else 0
+            pnl = _close_side(S, side, cur, hs, p, te)
+            S[TPPROFIT] += pnl
+            if pnl > 0:
+                S[WINS] += 1
+            else:
+                S[LOSSES] += 1
+        elif ev == 5:
+            side = 0 if down else 1
+            S[STOPLOSS] += _close_side(S, side, (cur - slip) if side == 0 else (cur + slip), hs, p, te)
+            S[SIDESTOPS] += 1
+        elif ev == 8 or ev == 9:
+            S[STOPLOSS] += _close_mkt(S, ev - 8, cur, hs, p, te)
+            S[TIMESTOPS] += 1
         else:
-            _track(S, cur, hs, cs)
-            _loss_close(S, cur, hs, p, t, ev == 3)
-            _track(S, cur, hs, cs)
+            kind = 0 if ev == 3 else (1 if ev == 4 else (2 if ev == 6 else 3))
+            _loss_close(S, cur, hs, p, te, kind)
+        _track(S, cur, hs, cs)
 
 
 @njit(cache=True)
-def _jump(S, m, hs, p, t, allow0, allow1, refcap):
+def _jump(S, m, hs, p, t, allow0, allow1, refcap, hold_sec):
     """Price gaps to m (weekend / data hole): fills happen AT the gap price."""
     cs = p[27]
     step = p[4] * p[37]
@@ -438,15 +532,21 @@ def _jump(S, m, hs, p, t, allow0, allow1, refcap):
         if S[N1] > 0 and m + hs >= S[FIRST1] + stop_d:
             S[STOPLOSS] += _close_side(S, 1, m + p[31] * p[37], hs, p, t)
             S[SIDESTOPS] += 1
+    if hold_sec > 0:
+        _time_stops(S, m, hs, p, t, hold_sec)
     _track(S, m, hs, cs)
     if S[N0] + S[N1] > 0:
         A, B = _lin(S, hs, cs)
-        x1, x2 = _thresholds(S, m, p, refcap)
+        x0, x1, x2, x3 = _thresholds(S, m, p, refcap)
         fl = A * m + B
-        if fl <= -x2:
-            _loss_close(S, m, hs, p, t, True)
+        if fl <= -x0:
+            _loss_close(S, m, hs, p, t, 0)
         elif fl <= -x1:
-            _loss_close(S, m, hs, p, t, False)
+            _loss_close(S, m, hs, p, t, 1)
+        elif fl <= -x2:
+            _loss_close(S, m, hs, p, t, 2)
+        elif fl <= -x3:
+            _loss_close(S, m, hs, p, t, 3)
     if allow0 and _adds_ok(S, 0, p, t) and S[N0] > 0 and S[N0] < S[EFFML0] and m + hs <= S[LAST0] - step:
         _try_add(S, 0, m, hs, p, t)
     if allow1 and _adds_ok(S, 1, p, t) and S[N1] > 0 and S[N1] < S[EFFML1] and m - hs >= S[LAST1] + step:
@@ -468,7 +568,8 @@ def _adds_ok(S, side, p, t):
 @njit(cache=True)
 def _fit_layers(p, hs, eq):
     """v7 pre-trade ladder fit: the deepest ladder whose loss at the L1-anchored stop
-    (incl. stop slippage and commission) fits MaxBasketRiskPct of equity."""
+    (incl. stop slippage, add-fill slippage drift and commission) fits MaxBasketRiskPct
+    of equity. A layer counts only if its trigger is reachable before the stop."""
     maxl = int(p[6])
     stop_d = p[50] * 10.0 * p[37]
     if stop_d <= 0:
@@ -479,7 +580,9 @@ def _fit_layers(p, hs, eq):
     worst = 0.0
     n = 0
     for k in range(1, maxl + 1):
-        dist = stop_d - (k - 1) * step  # this layer's fill (ask) to the stop (bid)
+        dist = stop_d - (k - 1) * (step - slip)  # layer k fill (ask) to the stop (bid)
+        if k > 1 and dist <= 2.0 * hs + slip:
+            break
         if dist <= 0:
             break
         lot = _lot_size(k, p)
@@ -527,11 +630,13 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
     S[EQPEAK] = p[24]
     sess_on = p[41] >= 0 and p[42] >= 0 and p[41] != p[42]
     S[DAYBAL] = p[24]
+    hs = p[32] * point * 0.5
+    mslip = _mkt(p)
     for i in range(n):
         ti = t[i]
         mod = (ti % 86400) // 60
         if use_sprd:
-            spr_pts = sprd[i]  # broker bar spread from an MT5 export
+            spr_pts = sprd[i] * p[58]  # broker bar spread from an MT5 export (x SpreadScale)
         else:
             spr_pts = p[32]
             if p[47] > 0:
@@ -583,15 +688,17 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
         allow = not (in_news and p[21] > 0)
         # ---- move from previous close to this open
         if ti - prev_t > 180:
-            _jump(S, o[i], hs, p, ti, allow, allow, refcap)
+            _jump(S, o[i], hs, p, ti, allow, allow, refcap, hold_sec)
         else:
-            _segment(S, prev_c, o[i], hs, p, ti, allow, allow, refcap)
+            _segment(S, prev_c, o[i], hs, p, ti, ti, allow, allow, refcap, hold_sec)
         # ---- Friday flatten (EA returns early: no adds, no opens)
         if p[14] > 0 and dow == 5 and hour >= p[15]:
             if S[N0] + S[N1] > 0:
                 for sd in range(2):
-                    S[STOPLOSS] += _close_side(S, sd, o[i], hs, p, ti)
+                    S[STOPLOSS] += _close_mkt(S, sd, o[i], hs, p, ti)
                 S[FRICLOSE] += 1
+            if npts > 0:
+                _build_path(wp, wt, o[i], h[i], l[i], c[i], npts)  # keep the RNG stream independent of Friday settings
             prev_c = c[i]
             prev_t = ti
             continue
@@ -612,7 +719,7 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
                 in_sess = mod >= p[41] or mod < p[42]
             if not in_sess and p[43] > 0 and S[N0] + S[N1] > 0:
                 for sd in range(2):
-                    S[STOPLOSS] += _close_side(S, sd, o[i], hs, p, ti)
+                    S[STOPLOSS] += _close_mkt(S, sd, o[i], hs, p, ti)
                 S[SESSCLOSE] += 1
         # ---- news pre-close
         if pre_news and S[N0] + S[N1] > 0:
@@ -620,7 +727,7 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
             for sd in range(2):
                 if p[22] >= 2 or _side_float(S, sd, o[i], hs, cs) >= 0:
                     if (S[N0] if sd == 0 else S[N1]) > 0:
-                        S[STOPLOSS] += _close_side(S, sd, o[i], hs, p, ti)
+                        S[STOPLOSS] += _close_mkt(S, sd, o[i], hs, p, ti)
                         closed = True
             if closed:
                 S[NEWSCLOSE] += 1
@@ -656,31 +763,35 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
                     effml = _fit_layers(p, hs, eq)  # v7 pre-trade ladder fit to the risk budget
                     if effml >= 1:
                         if want0 and S[N0] == 0 and S[L0] + S[L1] + lot1 <= p[7] + 1e-9:
-                            px = o[i] + hs
-                            _open(S, 0, px, lot1, p, ti)
-                            S[TP0] = np.round((px + tpd) / point) * point
+                            px = o[i] + hs  # requested ask; the fill slips by MktSlip
+                            _open(S, 0, px + mslip, lot1, p, ti)
+                            S[TP0] = np.round((px + tpd) / point) * point  # EA sets TP from the request
                             S[EFFML0] = effml
                             S[GRIDS] += 1
+                            if effml <= 1:
+                                S[HITMAX] += 1
                         if want1 and S[N1] == 0 and S[L0] + S[L1] + lot1 <= p[7] + 1e-9:
                             px = o[i] - hs
-                            _open(S, 1, px, lot1, p, ti)
+                            _open(S, 1, px - mslip, lot1, p, ti)
                             S[TP1] = np.round((px - tpd) / point) * point
                             S[EFFML1] = effml
                             S[GRIDS] += 1
+                            if effml <= 1:
+                                S[HITMAX] += 1
         # ---- intra-bar path
         nwp = _build_path(wp, wt, o[i], h[i], l[i], c[i], npts)
         for k in range(nwp - 1):
-            tk = ti + wt[k] * 60.0
-            if wp[k + 1] != wp[k]:
-                _segment(S, wp[k], wp[k + 1], hs, p, tk, allow, allow, refcap)
-            if hold_sec > 0:  # sub-minute clock: check the hold limit at every waypoint
-                _time_stops(S, wp[k + 1], hs, p, ti + wt[k + 1] * 60.0, hold_sec)
-            if p[53] > 0 or p[44] > 0:  # the EA checks these on every tick
-                _acct_guards(S, wp[k + 1], hs, p, ti + wt[k + 1] * 60.0)
+            tk0 = ti + wt[k] * 60.0
+            tk1 = ti + wt[k + 1] * 60.0
+            if wp[k + 1] != wp[k]:  # the leg solves hold deadlines and account limits inside itself
+                _segment(S, wp[k], wp[k + 1], hs, p, tk0, tk1, allow, allow, refcap, hold_sec)
+            if hold_sec > 0:  # flat legs: the clock still runs
+                _time_stops(S, wp[k + 1], hs, p, tk1, hold_sec)
+            if p[53] > 0 or p[44] > 0:  # the EA checks these on every tick, flat or not
+                _acct_guards(S, wp[k + 1], hs, p, tk1)
         prev_c = c[i]
         prev_t = ti
-    # final
-    hs = p[32] * point * 0.5
+    # final mark uses the last processed bar's spread
     a_, b_ = _lin(S, hs, cs)
     final_eq = S[BAL] + a_ * prev_c + b_
     if rec_daily:
@@ -711,20 +822,13 @@ def len_stats():
 def _acct_guards(S, m, hs, p, t):
     """Kill latch at PeakKillPct below the running equity peak (the same peak the DD
     statistics use) and the daily loss limit vs the balance at the server-day start."""
-    if S[N0] + S[N1] == 0:
-        return
     a_, b_ = _lin(S, hs, p[27])
-    eq = S[BAL] + a_ * m + b_
+    eq = S[BAL] + a_ * m + b_  # flat -> balance: a loss realised by a stop counts too
     if p[53] > 0 and S[KILL] == 0 and eq <= S[PEAK] * (1.0 - p[53] / 100.0):
-        for sd in range(2):
-            S[STOPLOSS] += _close_side(S, sd, m, hs, p, t)
-        S[KILL] = 1
+        _loss_close(S, m, hs, p, t, 2)
         return
     if p[44] > 0 and S[DAYHALT] == 0 and S[DAYBAL] > 0 and eq - S[DAYBAL] <= -p[44] / 100.0 * S[DAYBAL]:
-        for sd in range(2):
-            S[STOPLOSS] += _close_side(S, sd, m, hs, p, t)
-        S[DAYHALT] = 1
-        S[DAYSTOPS] += 1
+        _loss_close(S, m, hs, p, t, 3)
 
 
 @njit(cache=True)
@@ -732,7 +836,7 @@ def _time_stops(S, m, hs, p, t, hold_sec):
     for sd in range(2):
         if (S[N0] if sd == 0 else S[N1]) > 0:
             if t - (S[START0] if sd == 0 else S[START1]) >= hold_sec - 1e-6:
-                S[STOPLOSS] += _close_side(S, sd, m, hs, p, t)
+                S[STOPLOSS] += _close_mkt(S, sd, m, hs, p, t)
                 S[TIMESTOPS] += 1
 
 
@@ -755,9 +859,10 @@ def _build_path(wp, wt, o, h, l, c, npts):
         wt[0] = 0.0; wt[1] = 1.0 / 3.0; wt[2] = 2.0 / 3.0; wt[3] = 59.0 / 60.0
         return 4
     rng = h - l
+    tend = 59.0 / 60.0
     hi_first = np.random.random() < 0.5
     t1 = np.random.uniform(0.05, 0.6)
-    t2 = np.random.uniform(t1 + 0.05, 0.95)
+    t2 = np.random.uniform(t1 + 0.05, 0.93)
     av0 = o
     av1 = h if hi_first else l
     av2 = l if hi_first else h
@@ -769,7 +874,7 @@ def _build_path(wp, wt, o, h, l, c, npts):
         elif g == 1:
             a, b, ta, tb = av1, av2, t1, t2
         else:
-            a, b, ta, tb = av2, av3, t2, 1.0
+            a, b, ta, tb = av2, av3, t2, tend
         wp[k] = a
         wt[k] = ta
         k += 1
@@ -785,7 +890,7 @@ def _build_path(wp, wt, o, h, l, c, npts):
             wp[k] = v
             k += 1
     wp[k] = c
-    wt[k] = 59.0 / 60.0
+    wt[k] = tend
     return k + 1
 
 
