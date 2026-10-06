@@ -225,3 +225,44 @@ The setup is your production logic: BUY+SELL together, layers at the grid size, 
 - The zero-cost profits depend on the simulated sub-minute price path, so treat them as an upper bound.
 
 This is exactly why institutional HF grids work and retail ones don't: they are *paid* the spread (maker rebates), so their cost is negative.
+
+## 8. Run on Vantage Markets conditions
+
+### Account conditions
+
+Researched by workflow `vantage-conditions`: one sweep of Vantage's own pages, one of independent review and measurement sites, then a reconcile step. Where sources disagree, the costlier value is used. These figures are for the offshore/global entity on MT5:
+
+| Account | Typical EURUSD spread | Commission | Leverage | Stop-out |
+|---|---|---|---|---|
+| Raw ECN | 0.2 pip (measured 0.08–0.3) | $6/lot round turn | 1:500 | 20% |
+| Raw ECN, best case | 0.13 pip (ForexBrokers.com) | $6/lot round turn | 1:500 | 20% |
+| Standard STP | 1.4 pip (Vantage says ~1.2) | $0 | 1:500 | 20% |
+| Cent | like STP, balance in USC | $0 | 1:500 | 20% |
+| Pro ECN (reference only, $10,000 minimum) | 0.2 pip | $3/lot round turn | 1:500 | 20% |
+
+Sources are in `research/results/vantage/vantage_conditions_research.json`.
+
+Caveats:
+
+- Vantage does not publish EURUSD swaps or the cent contract size. Read them from MT5 → Symbol → Specification.
+- Swap does not affect these HF tests. Positions are closed within 5 minutes and before 23:00 server time, so none are held overnight.
+
+### Results
+
+$100, EURUSD, your production logic in HF mode (M1 entries, 5-minute hold, 0.01 +0.01 per layer, 5 layers). The full table is in `research/results/vantage/vantage_backtests.csv`.
+
+| Vantage account | Grid × TP cells ending above $100 (2012–16 / 2017–20) | Best cell | Grid 2 / TP 1 | Grid 5 / TP 3 |
+|---|---|---|---|---|
+| Raw ECN (0.2 + $6) | **0/36 / 0/36** | ends at ~$10 | $9.19 / $5.52 | $8.89 / $9.61 |
+| Raw ECN best case (0.13 + $6) | **0/36 / 0/36** | ends at ~$10 | $4.69 / $9.34 | $8.93 / $10.04 |
+| Standard STP (1.4) | **0/36 / 0/36** | ends at ~$10 | $7.88 / $10.02 | $1.28 / $10.30 |
+| Cent (1.4, USC) | **0/36 / 0/36** | ends at ~$0.10 | $0.08 / $0.10 | $0.09 / $0.10 |
+| Pro ECN (0.2 + $3) | **0/36 / 0/36** | ends at ~$10 | $9.75 / $9.92 | $8.86 / $9.33 |
+
+The ~$10 floor is where the margin buffer stops new grids. On a cent account the same costs simply bleed the balance to nearly zero.
+
+The slow late-NY stretch configuration from the in-sample search loses least: $100 → $84–86 on Raw ECN, Standard STP and Pro ECN, and → $98.6 on Cent, where the 0.01 lot is far smaller relative to equity. It is still a loss, and it trades about 0.1–0.2 times a day.
+
+**Conclusion on Vantage:** even on the cheapest account ($6/lot + 0.13–0.2 pip ≈ 0.8 pip per round trip), costs are 3–6× the ~0.13–0.26 pip break-even of the best grid/TP cells.
+
+The decisive check is your own Vantage MT5 Strategy Tester: "Every tick based on real ticks", with your account's real spread, commission and swap.

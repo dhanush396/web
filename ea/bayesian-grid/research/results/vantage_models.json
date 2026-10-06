@@ -1,0 +1,74 @@
+{
+ "backtest_models": [
+  {
+   "name": "vantage_raw_ecn",
+   "account": "Raw ECN (MT5, offshore/global entity: VFSC/CIMA/FSCA), USD base, min deposit $50",
+   "balance_units": 100,
+   "spread_pips_typical": 0.2,
+   "commission_round_turn_per_lot": 6,
+   "leverage": 500,
+   "stop_out_pct": 20,
+   "min_lot": 0.01,
+   "swap_long": -8.07,
+   "swap_short": 0.1,
+   "confidence": "medium",
+   "evidence": "Commission: both reports agree on USD 3.00/side ($6 round turn), from Vantage's commission page and help centre (https://www.vantagemarkets.com/trading/fees/commission/, https://global.vantagehelpcenter.com/hc/en-us/articles/10949122099599), confirmed by ForexBrokers.com, BrokerChooser and CompareForexBrokers. Spread: Vantage publishes only 'from 0.0'. The official report used ForexBrokers.com's measured 0.127 average (https://www.forexbrokers.com/reviews/vantage). The third-party range is 0.08 to 0.3: CompareForexBrokers 0.23, FXVerify about 0.23 raw, DayTrading about 0.2, TradersUnion about 0.3. I chose the more costly 0.2; run a stress test at 0.3. All-in cost is about 0.8 pips per round turn. Stop-out 20% and margin call 50% for STP/ECN since 9 Feb 2025: Vantage help centre (https://global.vantagehelpcenter.com/hc/en-us/articles/10948711085839) and EduBourse agree. Leverage: published values conflict (500 / 1000 / 2000). I used 500, the global help centre's figure and the most conservative offshore value. Min lot 0.01 in both reports. Lot step is unpublished, assume 0.01. Swap: Vantage publishes none, so these are third-party values with low confidence (see the conflicts list). Triple swap on Wednesday; server time GMT+2/+3."
+  },
+  {
+   "name": "vantage_raw_ecn_bestcase",
+   "account": "Raw ECN best case: 0.13-pip measured average (ForexBrokers.com)",
+   "balance_units": 100,
+   "spread_pips_typical": 0.13,
+   "commission_round_turn_per_lot": 6,
+   "leverage": 500,
+   "stop_out_pct": 20,
+   "min_lot": 0.01,
+   "swap_long": -8.07,
+   "swap_short": 0.1,
+   "confidence": "medium",
+   "evidence": "Commission: both reports agree on USD 3.00/side ($6 round turn), from Vantage's commission page and help centre (https://www.vantagemarkets.com/trading/fees/commission/, https://global.vantagehelpcenter.com/hc/en-us/articles/10949122099599), confirmed by ForexBrokers.com, BrokerChooser and CompareForexBrokers. Spread: Vantage publishes only 'from 0.0'. The official report used ForexBrokers.com's measured 0.127 average (https://www.forexbrokers.com/reviews/vantage). The third-party range is 0.08 to 0.3: CompareForexBrokers 0.23, FXVerify about 0.23 raw, DayTrading about 0.2, TradersUnion about 0.3. I chose the more costly 0.2; run a stress test at 0.3. All-in cost is about 0.8 pips per round turn. Stop-out 20% and margin call 50% for STP/ECN since 9 Feb 2025: Vantage help centre (https://global.vantagehelpcenter.com/hc/en-us/articles/10948711085839) and EduBourse agree. Leverage: published values conflict (500 / 1000 / 2000). I used 500, the global help centre's figure and the most conservative offshore value. Min lot 0.01 in both reports. Lot step is unpublished, assume 0.01. Swap: Vantage publishes none, so these are third-party values with low confidence (see the conflicts list). Triple swap on Wednesday; server time GMT+2/+3."
+  },
+  {
+   "name": "vantage_standard_stp",
+   "account": "Standard STP (MT5, offshore/global entity), USD base, min deposit $50",
+   "balance_units": 100,
+   "spread_pips_typical": 1.4,
+   "commission_round_turn_per_lot": 0,
+   "leverage": 500,
+   "stop_out_pct": 20,
+   "min_lot": 0.01,
+   "swap_long": -8.07,
+   "swap_short": 0.1,
+   "confidence": "medium",
+   "evidence": "Commission is 0 in both reports (https://www.vantagemarkets.com/trading/accounts/stp/). Spread: Vantage's EURUSD academy guide says about 1.2 typical (https://www.vantagemarkets.com/en/academy/trading-eurusd/). Third-party measurements: ForexBrokers.com, DayTrading.com and CompareForexBrokers 1.4; FXVerify 1.35 to 1.51; Myfxbook 1.13 (account type not stated); TradersUnion 0.9 (outlier). I chose the more costly 1.4. The 'from' spread is listed as 1.0 on the STP page and 1.1 on the accounts overview. Stop-out 20% / margin call 50% since Feb 2025 (Vantage help centre, EduBourse). Leverage 500 is the conservative choice among 500, 1000 and 2000. Min lot 0.01; EURUSD max 100 lots. Swap: same third-party values as Raw ECN, low confidence."
+  },
+  {
+   "name": "vantage_cent",
+   "account": "Cent (MT5 only for new accounts, offshore entities), USC base: $100 = 10,000 USC, min deposit $50",
+   "balance_units": 10000,
+   "spread_pips_typical": 1.4,
+   "commission_round_turn_per_lot": 0,
+   "leverage": 500,
+   "stop_out_pct": 20,
+   "min_lot": 0.01,
+   "swap_long": -8.07,
+   "swap_short": 0.1,
+   "confidence": "low",
+   "evidence": "Vantage's definition (https://global.vantagehelpcenter.com/hc/en-us/articles/10574015709327-What-is-a-Cent-account): the account trades only in USC, minimum deposit $50, minimum lot 0.01. Vantage also says the only difference from Standard STP is the cent denomination. Vantage does not publish contract size, commission, typical spread or leverage for Cent. The usual cent convention is assumed: 1.0 cent-lot = 100,000 base units with P&L in USC. Under that convention, EURUSD pays 10 USC/pip per cent-lot (= $0.10), so 0.01 cent-lot = 0.1 USC/pip (= $0.001). All per-lot values here are USC per cent-lot, numerically the same as the STP USD-per-lot values. Commission: 0 USC. This is implied by Vantage ('STP in cents') and stated by DayTrading.com/FXLeaders; Investingoal hints at a '$0-$6 RT' RAW-style variant. Spread: Vantage advertises only 'from 0.0'. DayTrading's 0.2 average probably reflects the Raw account; SAShares lists Cent with STP at 'from 1.4'. I used STP-like 1.4. Stop-out: 20% comes from the help centre's 'all trading platforms' statement; the third-party report gives no current value (older reviews say 50%). Run a sensitivity test at 50%. Leverage: 1:500 (DayTrading/FXLeaders, help centre) vs 1:2000 (DayTrading cent page, InvestorTrip). I chose 500. Swap is unpublished; STP values are assumed, applied as USC per cent-lot. Confirm contract size, SYMBOL_VOLUME_STEP and swaps in the MT5 Specification."
+  },
+  {
+   "name": "vantage_pro_ecn_reference",
+   "account": "Pro ECN (MT5), USD base, REFERENCE ONLY: min deposit $10,000 by request to support, not reachable with $100",
+   "balance_units": 100,
+   "spread_pips_typical": 0.2,
+   "commission_round_turn_per_lot": 3,
+   "leverage": 500,
+   "stop_out_pct": 20,
+   "min_lot": 0.01,
+   "swap_long": -8.07,
+   "swap_short": 0.1,
+   "confidence": "low",
+   "evidence": "Commission: Vantage says USD 1.50/side ($3 RT) (help centre article 10949122099599, https://www.vantagemarkets.com/trading/accounts/pro-ecn/), backed by ForexBrokers, CompareForexBrokers, TradersUnion and DayTrading. Investingoal says $2/side and TakeProfitApp says $1.50-2. Following the rule to prefer Vantage for commission, $3 RT is used. Spread: Vantage publishes none; the third-party report assumes the same raw feed as Raw ECN, about 0.2. Min lot: Vantage does not state it; third parties say 0.01. Stop-out 20% (all STP/ECN accounts). Swap-free availability: Vantage says yes; the third-party report could not confirm it."
+  }
+ ]
+}
