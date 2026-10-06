@@ -1,0 +1,4 @@
+[bayes] configs=40  IS-survivors=40 (100%)  OOS-survivors=40
+[bayes] Spearman(IS score, OOS score) = -0.113
+[bayes] top-20 by IS: OOS ruined=0/20, median OOS CAGR=7.3%  median OOS DD=29.6%
+[bayes] configs positive in BOTH IS and OOS without ruin: 30

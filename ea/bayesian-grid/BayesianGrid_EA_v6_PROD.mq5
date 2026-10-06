@@ -20,15 +20,50 @@
 //|                                                                  |
 //|  TIME FILTER gates NEW-GRID OPENS ONLY. Existing grids continue  |
 //|  adding layers and managing TPs 24/5 (by design).                |
+//|                                                                  |
+//|  v6.13 (small-account / news release):                           |
+//|   - NEWS FILTER: MQL5 Economic Calendar live (high-impact events |
+//|     of the symbol's currencies). In the Strategy Tester (where   |
+//|     the calendar API is unavailable) it reads BG_news_calendar.csv|
+//|     from MQL5\Files or Common\Files. Blocks NEW grids in the     |
+//|     window; optional layer pause and pre-news close.             |
+//|   - FIX: basket stop now keeps flattening until every EA position|
+//|     is closed (v6.12 latched after one CloseAll pass, leaving any|
+//|     failed closes open and still adding layers).                 |
+//|   - FIX: CloseAll retries / cycles fill policy and reports fails.|
+//|   - FIX: TP self-heal — a grid whose positions disagree on TP or |
+//|     have TP=0 (SetTP failure / no-TP fallback) is re-synced.     |
+//|   - FIX: grid start time is no longer overwritten on the first   |
+//|     tick after a restart (recovery-seeded value is kept).        |
+//|   - FIX: grid P/L attribution includes entry-deal commission.    |
+//|   - NEW: LotIncEvery (step lot every N layers -> 0.01 ladders),  |
+//|     HaltCooldownMin (auto-resume after a basket stop),           |
+//|     RefCapital<0 = DD% vs current balance, start-up risk report. |
+//|  All v6.12 inputs keep their meaning and defaults.               |
 //+------------------------------------------------------------------+
-#property copyright   "Jeckov Kanani — Bayesian Grid v6.12 (Production)"
-#property version     "6.12"
+#property copyright   "Jeckov Kanani — Bayesian Grid v6.13 (Production)"
+#property version     "6.13"
 #property strict
+#property tester_file "BG_news_calendar.csv"
+
+enum ENUM_NEWS_IMP
+  {
+   NEWS_IMP_HIGH   = 3,   // High impact only
+   NEWS_IMP_MEDIUM = 2    // Medium + high impact
+  };
+
+enum ENUM_NEWS_CLOSE
+  {
+   NEWS_CLOSE_NONE   = 0, // Do not close before news
+   NEWS_CLOSE_PROFIT = 1, // Close grids that are in profit
+   NEWS_CLOSE_ALL    = 2  // Close all EA grids
+  };
 
 input group           "══════ Grid Parameters ══════"
 input double          BaseLot              = 0.08;     // Base lot (layers 1-5)
 input int             FlatLayers           = 5;        // Flat-lot layers
 input double          LotIncrement         = 0.07;     // Increment per layer after flat
+input int             LotIncEvery          = 1;        // Apply LotIncrement every N layers after flat (1 = v6.12)
 input int             GridSpacingPts       = 75;       // Grid spacing in points (7.5 pips)
 input double          TP_Pips              = 5.3;      // TP distance from wavg (pips)
 input int             MaxLayers            = 18;       // Max layers per side
@@ -41,8 +76,21 @@ input double          MarginBufferMult     = 5.0;      // Require free margin >=
 input int             MaxSpreadPts         = 0;        // Skip NEW grid if spread > this (0 = disabled)
 input double          MaxEquityDD_Pct      = 0.0;      // Halt NEW grids when GRID float-loss% >= this (0 = off)
 input double          EmergencyCloseDD_Pct = 0.0;      // CLOSE EA GRIDS when float-loss% >= this (0 = off). Basket stop.
-input double          RefCapital           = 0.0;      // Reference capital for DD% (0 = use balance at init)
+input double          RefCapital           = 0.0;      // Reference capital for DD% (0 = balance at init, <0 = current balance)
 input bool            ResetHaltOnInit      = true;     // Clear emergency-halt latch on (re)load
+input int             HaltCooldownMin      = 0;        // Auto-clear halt this many minutes after a basket stop (0 = latch until reload)
+
+input group           "══════ News Filter ══════"
+input bool            UseNewsFilter        = true;     // Block NEW grids around high-impact news
+input string          NewsCurrencies       = "";       // Currencies to watch ("" = symbol base + quote, e.g. EUR,USD)
+input ENUM_NEWS_IMP   NewsMinImportance    = NEWS_IMP_HIGH; // Minimum event importance
+input int             NewsBeforeMin        = 30;       // Block window starts N min before the event
+input int             NewsAfterMin         = 30;       // ... and ends N min after
+input bool            NewsPauseLayers      = false;    // Also pause layer adds inside the window
+input ENUM_NEWS_CLOSE NewsCloseMode        = NEWS_CLOSE_NONE; // Close grids before news
+input int             NewsCloseMin         = 15;       // ... this many minutes before the event
+input string          NewsCsvFile          = "BG_news_calendar.csv"; // Tester / fallback file (server time)
+input int             NewsCsvShiftHours    = 0;        // Shift CSV times (CSV is NY-close GMT+2/+3 server time)
 
 input group           "══════ Friday ══════"
 input bool            CloseOnFriday        = false;    // Flatten EA positions Friday after hour
@@ -75,6 +123,22 @@ bool     g_halt = false;          // emergency-close latch
 datetime g_buyGridStart  = 0;     // for accurate P/L attribution
 datetime g_sellGridStart = 0;
 double   g_refCapital    = 0;     // reference capital for GRID-scoped DD%
+bool     g_haltFlatten   = false; // basket stop fired: keep closing until flat
+datetime g_haltUntil     = 0;     // cooldown expiry (HaltCooldownMin > 0)
+
+//--- news state (times are trade-server time, ascending)
+datetime g_newsTime[];
+string   g_newsTitle[];
+string   g_newsCur[];
+int      g_newsCount    = 0;
+int      g_newsIdx      = 0;
+datetime g_newsLoadedAt = 0;
+bool     g_newsFromCsv  = false;
+string   g_newsCcys[];
+bool     g_newsBlock    = false;  // inside a news window (evaluated each tick)
+bool     g_newsPre      = false;  // inside the pre-news close window
+datetime g_newsNextT    = 0;
+string   g_newsNextName = "";
 
 //+------------------------------------------------------------------+
 //| GlobalVariable name helper (per symbol + magic set)               |
@@ -114,6 +178,11 @@ int OnInit()
       Print("FATAL: Symbol point size is zero. Aborting.");
       return INIT_PARAMETERS_INCORRECT;
      }
+   if(LotIncEvery < 1 || NewsBeforeMin < 0 || NewsAfterMin < 0 || NewsCloseMin < 0 || HaltCooldownMin < 0)
+     {
+      Print("FATAL: LotIncEvery must be >= 1 and news/cooldown minutes >= 0. Aborting.");
+      return INIT_PARAMETERS_INCORRECT;
+     }
 
    //--- Parse allowed hours (map is indexed by SERVER hour) ---
    ArrayInitialize(g_hourMap, false);
@@ -132,8 +201,7 @@ int OnInit()
      }
 
    //--- Reference capital for grid-scoped DD% ---
-   g_refCapital = (RefCapital > 0) ? RefCapital : AccountInfoDouble(ACCOUNT_BALANCE);
-   if(g_refCapital <= 0) g_refCapital = 1; // guard against /0
+   UpdateRefCapital(true);
 
    //--- Restore persisted stats / halt latch ---
    if(PersistStats)
@@ -144,12 +212,28 @@ int OnInit()
       if(GlobalVariableCheck(GvName("peak")))    g_peakBal    = MathMax(g_peakBal, GlobalVariableGet(GvName("peak")));
       if(!ResetHaltOnInit && GlobalVariableCheck(GvName("halt")))
          g_halt = (GlobalVariableGet(GvName("halt")) > 0.5);
+      if(!ResetHaltOnInit && GlobalVariableCheck(GvName("haltUntil")))
+         g_haltUntil = (datetime)(long)GlobalVariableGet(GvName("haltUntil"));
      }
    if(ResetHaltOnInit)
      {
       g_halt = false;
-      if(GlobalVariableCheck(GvName("halt"))) GlobalVariableDel(GvName("halt"));
+      g_haltUntil = 0;
+      if(GlobalVariableCheck(GvName("halt")))      GlobalVariableDel(GvName("halt"));
+      if(GlobalVariableCheck(GvName("haltUntil"))) GlobalVariableDel(GvName("haltUntil"));
      }
+
+   //--- A restored halt latch with EA positions still open = an unfinished basket stop ---
+   if(g_halt && PosCount(MagicBuy) + PosCount(MagicSell) > 0)
+     {
+      g_haltFlatten = true;
+      Print("!!! Restored HALT latch with open EA positions -> will finish closing them");
+     }
+
+   //--- News filter ---
+   NewsSetupCurrencies();
+   if(UseNewsFilter)
+      NewsRefresh(true);
 
    //--- Recovery: detect existing grids and seed their start times ---
    int bc = PosCount(MagicBuy);
@@ -157,7 +241,7 @@ int OnInit()
    g_buyGridStart  = (bc > 0) ? OldestOpenTime(MagicBuy)  : 0;
    g_sellGridStart = (sc > 0) ? OldestOpenTime(MagicSell) : 0;
 
-   PrintFormat("═══ BayesianGrid v6.12 PRODUCTION ═══");
+   PrintFormat("═══ BayesianGrid v6.13 PRODUCTION ═══");
    PrintFormat("Sym=%s Pt=%.5f Digits=%d Spread=%d StopsLvl=%d",
                g_sym, g_point, g_digits,
                (int)SymbolInfoInteger(g_sym, SYMBOL_SPREAD),
@@ -166,10 +250,16 @@ int OnInit()
                (int)SymbolInfoInteger(g_sym, SYMBOL_FILLING_MODE),
                SymbolInfoDouble(g_sym, SYMBOL_VOLUME_MIN),
                SymbolInfoDouble(g_sym, SYMBOL_VOLUME_STEP));
-   PrintFormat("Base=%.2f Flat=%d Inc=%.2f Spacing=%d TP=%.1fpips Max=%d",
-               BaseLot, FlatLayers, LotIncrement, GridSpacingPts, TP_Pips, MaxLayers);
-   PrintFormat("Risk: MaxLots=%.2f MarginMult=%.1f MaxSpread=%d DDhalt=%.1f%% Basket=%.1f%% RefCap=%.2f",
-               MaxTotalLots, MarginBufferMult, MaxSpreadPts, MaxEquityDD_Pct, EmergencyCloseDD_Pct, g_refCapital);
+   PrintFormat("Base=%.2f Flat=%d Inc=%.2f/every %d Spacing=%d TP=%.1fpips Max=%d",
+               BaseLot, FlatLayers, LotIncrement, LotIncEvery, GridSpacingPts, TP_Pips, MaxLayers);
+   PrintFormat("Risk: MaxLots=%.2f MarginMult=%.1f MaxSpread=%d DDhalt=%.1f%% Basket=%.1f%% RefCap=%.2f%s Cooldown=%dmin",
+               MaxTotalLots, MarginBufferMult, MaxSpreadPts, MaxEquityDD_Pct, EmergencyCloseDD_Pct, g_refCapital,
+               RefCapital < 0 ? "(dynamic)" : "", HaltCooldownMin);
+   PrintFormat("News: %s src=%s events=%d ccy=[%s] imp>=%d window=-%d/+%dmin pauseLayers=%s close=%d@-%dmin",
+               UseNewsFilter ? "ON" : "OFF", g_newsFromCsv ? "CSV" : "CALENDAR", g_newsCount,
+               NewsCcyList(), (int)NewsMinImportance, NewsBeforeMin, NewsAfterMin,
+               NewsPauseLayers ? "Y" : "N", (int)NewsCloseMode, NewsCloseMin);
+   RiskPreflight();
    PrintFormat("TimeFilter=%s Hours=[%s] InGMT=%s SrvOff=%d BlockFri=%s CloseFri=%s@%d",
                UseTimeFilter ? "ON" : "OFF", AllowedHours,
                HoursInGMT ? "Y" : "N", ServerGMTOffset,
@@ -189,6 +279,7 @@ void OnDeinit(const int reason)
       GlobalVariableSet(GvName("spnl"),   g_sessionPnL);
       GlobalVariableSet(GvName("peak"),   g_peakBal);
       GlobalVariableSet(GvName("halt"),   g_halt ? 1 : 0);
+      GlobalVariableSet(GvName("haltUntil"), (double)(long)g_haltUntil);
      }
    ObjectsDeleteAll(0, "BG_");
    Comment("");
@@ -201,6 +292,35 @@ void OnTick()
   {
    double bal = AccountInfoDouble(ACCOUNT_BALANCE);
    if(bal > g_peakBal) g_peakBal = bal;
+   UpdateRefCapital(false);
+
+   //--- Basket stop follow-through: never leave a half-closed basket running ---
+   if(g_haltFlatten)
+     {
+      if(PosCount(MagicBuy) + PosCount(MagicSell) > 0)
+        {
+         int fails = CloseAll(MagicBuy) + CloseAll(MagicSell);
+         if(fails > 0 && DebugLog) PrintFormat("!!! HALT FLATTEN: %d position(s) still open, retrying", fails);
+         if(ShowPanel) Panel();
+         return;
+        }
+      g_haltFlatten = false;
+      Print(">>> HALT FLATTEN complete: all EA positions closed");
+     }
+
+   //--- Halt cooldown (only when HaltCooldownMin > 0 and the EA is flat) ---
+   if(g_halt && HaltCooldownMin > 0 && g_haltUntil > 0 && TimeCurrent() >= g_haltUntil
+      && PosCount(MagicBuy) + PosCount(MagicSell) == 0)
+     {
+      g_halt = false;
+      g_haltUntil = 0;
+      if(PersistStats)
+        {
+         GlobalVariableSet(GvName("halt"), 0);
+         GlobalVariableSet(GvName("haltUntil"), 0);
+        }
+      PrintFormat(">>> HALT COOLDOWN (%d min) elapsed: new grids re-enabled", HaltCooldownMin);
+     }
 
    double eq = AccountInfoDouble(ACCOUNT_EQUITY);
    double acctDD = (g_peakBal > 0) ? (g_peakBal - eq) / g_peakBal * 100.0 : 0; // ACCOUNT-level, display only (can be polluted by foreign positions)
@@ -218,7 +338,13 @@ void OnTick()
       CloseAll(MagicBuy);
       CloseAll(MagicSell);
       g_halt = true;
-      if(PersistStats) GlobalVariableSet(GvName("halt"), 1);
+      g_haltFlatten = true;
+      g_haltUntil = (HaltCooldownMin > 0) ? (datetime)(TimeCurrent() + HaltCooldownMin * 60) : (datetime)0;
+      if(PersistStats)
+        {
+         GlobalVariableSet(GvName("halt"), 1);
+         GlobalVariableSet(GvName("haltUntil"), (double)(long)g_haltUntil);
+        }
       if(ShowPanel) Panel();
       return;
      }
@@ -237,6 +363,36 @@ void OnTick()
         }
      }
 
+   //--- News filter state (refresh is throttled inside) ---
+   if(UseNewsFilter)
+     {
+      NewsRefresh(false);
+      NewsEval(TimeCurrent());
+     }
+   else
+     {
+      g_newsBlock = false;
+      g_newsPre   = false;
+     }
+
+   //--- Pre-news close (optional) ---
+   if(g_newsPre && NewsCloseMode != NEWS_CLOSE_NONE)
+     {
+      int mags[2];
+      mags[0] = MagicBuy;
+      mags[1] = MagicSell;
+      for(int k = 0; k < 2; k++)
+        {
+         if(PosCount(mags[k]) == 0) continue;
+         if(NewsCloseMode == NEWS_CLOSE_ALL || FloatPnL(mags[k]) >= 0)
+           {
+            PrintFormat(">>> PRE-NEWS CLOSE %s grid (float=$%.2f) before %s",
+                        mags[k] == MagicBuy ? "BUY" : "SELL", FloatPnL(mags[k]), g_newsNextName);
+            CloseAll(mags[k]);
+           }
+        }
+     }
+
    //--- Read LIVE grid state from positions ---
    double bWavg, bLastPx, bLots;
    int    bCount;
@@ -250,8 +406,11 @@ void OnTick()
    static int s_prevBuyCount  = -1;
    static int s_prevSellCount = -1;
 
-   if(s_prevBuyCount <= 0 && bCount > 0)  g_buyGridStart  = TimeCurrent();
-   if(s_prevSellCount <= 0 && sCount > 0) g_sellGridStart = TimeCurrent();
+   // -1 = first tick after (re)load: keep the start time OnInit recovered from the open positions
+   if(s_prevBuyCount == 0 && bCount > 0)  g_buyGridStart  = TimeCurrent();
+   if(s_prevSellCount == 0 && sCount > 0) g_sellGridStart = TimeCurrent();
+   if(s_prevBuyCount < 0 && bCount > 0 && g_buyGridStart == 0)   g_buyGridStart  = OldestOpenTime(MagicBuy);
+   if(s_prevSellCount < 0 && sCount > 0 && g_sellGridStart == 0) g_sellGridStart = OldestOpenTime(MagicSell);
 
    //--- Detect grid closed by TP ---
    if(s_prevBuyCount > 0 && bCount == 0)
@@ -273,11 +432,22 @@ void OnTick()
    s_prevBuyCount  = bCount;
    s_prevSellCount = sCount;
 
+   //--- TP self-heal (once a minute): re-sync grids with inconsistent / missing TPs ---
+   static datetime s_lastHeal = 0;
+   if(TimeCurrent() - s_lastHeal >= 60)
+     {
+      s_lastHeal = TimeCurrent();
+      HealTP(ORDER_TYPE_BUY,  MagicBuy,  bWavg, bCount);
+      HealTP(ORDER_TYPE_SELL, MagicSell, sWavg, sCount);
+     }
+
    //--- Active grids: add layers (NEVER gated by time/halt — must reach TP) ---
-   if(bCount > 0)
+   //    Optional exception: NewsPauseLayers holds adds inside a news window.
+   bool layersOK = !(g_newsBlock && NewsPauseLayers);
+   if(bCount > 0 && layersOK)
       TryAddLayer(ORDER_TYPE_BUY, MagicBuy, bWavg, bLastPx, bLots, bCount);
 
-   if(sCount > 0)
+   if(sCount > 0 && layersOK)
       TryAddLayer(ORDER_TYPE_SELL, MagicSell, sWavg, sLastPx, sLots, sCount);
 
    //--- Idle grids: open new ones (gated) ---
@@ -291,15 +461,16 @@ void OnTick()
       bool ddOK     = (MaxEquityDD_Pct <= 0 || gridDD < MaxEquityDD_Pct);
       bool haltOK   = !g_halt;
       bool spreadOK = SpreadOK();
+      bool newsOK   = !g_newsBlock;
 
       // SMOKE TEST: force the very first grid open after load, bypassing ONLY the time filter.
       static bool s_startupOpened = false;
       bool forceStart = (OpenOnStart && !s_startupOpened && bCount == 0 && sCount == 0);
 
-      bool openOK   = (timeOK || forceStart) && riskOK && ddOK && haltOK && spreadOK;
+      bool openOK   = (timeOK || forceStart) && riskOK && ddOK && haltOK && spreadOK && newsOK;
 
       if(DebugLog)
-         PrintFormat("[BAR] Buy=%d Sell=%d Time=%s%s Margin=%s GridDD=%.1f%%(%s) AcctDD=%.1f%% Halt=%s Spread=%s -> %s",
+         PrintFormat("[BAR] Buy=%d Sell=%d Time=%s%s Margin=%s GridDD=%.1f%%(%s) AcctDD=%.1f%% Halt=%s Spread=%s News=%s -> %s",
                      bCount, sCount,
                      timeOK ? "OK" : "BLOCK",
                      forceStart ? "(START-FORCE)" : "",
@@ -308,6 +479,7 @@ void OnTick()
                      acctDD,
                      haltOK ? "OK" : "LATCHED",
                      spreadOK ? "OK" : "WIDE",
+                     newsOK ? "OK" : "BLOCK(" + g_newsNextName + ")",
                      openOK ? "OPEN-ALLOWED" : "OPEN-BLOCKED");
 
       if(openOK)
@@ -580,7 +752,11 @@ double LotSize(int layer)
    if(layer <= FlatLayers)
       lot = BaseLot;
    else
-      lot = BaseLot + (layer - FlatLayers) * LotIncrement;
+     {
+      int every = MathMax(1, LotIncEvery);
+      int steps = (layer - FlatLayers + every - 1) / every;   // ceil; every=1 -> v6.12 ladder
+      lot = BaseLot + steps * LotIncrement;
+     }
 
    double minL = SymbolInfoDouble(g_sym, SYMBOL_VOLUME_MIN);
    double maxL = SymbolInfoDouble(g_sym, SYMBOL_VOLUME_MAX);
@@ -738,16 +914,24 @@ double RecentPnL(int magic, datetime fromTime)
       if(d == 0) continue;
       if(HistoryDealGetString(d, DEAL_SYMBOL) != g_sym) continue;
       if(HistoryDealGetInteger(d, DEAL_MAGIC) != magic) continue;
-      if(HistoryDealGetInteger(d, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+      long entry = HistoryDealGetInteger(d, DEAL_ENTRY);
+      if(entry == DEAL_ENTRY_IN)
+        {
+         // brokers that charge commission per side book half of it on the entry deal
+         p += HistoryDealGetDouble(d, DEAL_COMMISSION);
+         continue;
+        }
+      if(entry != DEAL_ENTRY_OUT) continue;
       p += HistoryDealGetDouble(d, DEAL_PROFIT) + HistoryDealGetDouble(d, DEAL_SWAP)
          + HistoryDealGetDouble(d, DEAL_COMMISSION);
      }
    return p;
   }
 
-void CloseAll(int magic)
+//--- Close every position of one magic. Returns the number that could NOT be closed.
+int CloseAll(int magic)
   {
-   ENUM_ORDER_TYPE_FILLING fp = FillPolicy();
+   int fails = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
       ulong t = PositionGetTicket(i);
@@ -763,15 +947,325 @@ void CloseAll(int magic)
       r.volume       = PositionGetDouble(POSITION_VOLUME);
       r.deviation    = 30;
       r.magic        = magic;
-      r.type_filling = fp;
+      r.type_filling = FillPolicy();
 
       long pt = PositionGetInteger(POSITION_TYPE);
       r.type  = (pt == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-      r.price = (pt == POSITION_TYPE_BUY) ? SymbolInfoDouble(g_sym, SYMBOL_BID)
-                                           : SymbolInfoDouble(g_sym, SYMBOL_ASK);
-      ResetLastError();
-      OrderSend(r, x);
+
+      bool ok = false;
+      for(int a = 0; a < 3 && !ok; a++)
+        {
+         r.price = (pt == POSITION_TYPE_BUY) ? SymbolInfoDouble(g_sym, SYMBOL_BID)
+                                              : SymbolInfoDouble(g_sym, SYMBOL_ASK);
+         ResetLastError();
+         if(OrderSend(r, x) && (x.retcode == TRADE_RETCODE_DONE || x.retcode == TRADE_RETCODE_PLACED))
+           {
+            ok = true;
+            break;
+           }
+         if(x.retcode == TRADE_RETCODE_INVALID_FILL)
+           {
+            if(r.type_filling == ORDER_FILLING_FOK)      r.type_filling = ORDER_FILLING_IOC;
+            else if(r.type_filling == ORDER_FILLING_IOC) r.type_filling = ORDER_FILLING_RETURN;
+            else                                         r.type_filling = ORDER_FILLING_FOK;
+           }
+         else if(!MQLInfoInteger(MQL_TESTER))
+            Sleep(100);
+        }
+      if(!ok)
+        {
+         fails++;
+         PrintFormat("  CLOSE FAIL pos=%I64u ret=%d [%s] err=%d", t, x.retcode, x.comment, GetLastError());
+        }
      }
+   return fails;
+  }
+
+//--- RefCapital: >0 fixed, 0 = balance at init, <0 = current balance (DD% scales with the account)
+void UpdateRefCapital(bool atInit)
+  {
+   if(RefCapital > 0)
+      g_refCapital = RefCapital;
+   else if(RefCapital < 0 || atInit)
+      g_refCapital = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(g_refCapital <= 0) g_refCapital = 1; // guard against /0
+  }
+
+//--- Re-sync a grid whose positions disagree on TP or carry no TP at all.
+//    A healthy grid (all TPs equal) is never touched, so the v6 TP logic is unchanged.
+void HealTP(ENUM_ORDER_TYPE type, int magic, double wavg, int count)
+  {
+   if(count <= 0 || wavg <= 0) return;
+   double tpMin = DBL_MAX, tpMax = -DBL_MAX;
+   bool   missing = false;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong t = PositionGetTicket(i);
+      if(t == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != g_sym) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      double tp = PositionGetDouble(POSITION_TP);
+      if(tp <= 0) { missing = true; continue; }
+      tpMin = MathMin(tpMin, tp);
+      tpMax = MathMax(tpMax, tp);
+     }
+   if(!missing && tpMax - tpMin <= g_point) return;
+
+   double tp = (type == ORDER_TYPE_BUY) ? ND(wavg + TP_Pips * 10.0 * g_point)
+                                        : ND(wavg - TP_Pips * 10.0 * g_point);
+   tp = ClampTP(tp, type);
+   PrintFormat(">>> TP HEAL %s: %d pos, missing=%s spread=%.5f -> TP=%.5f",
+               type == ORDER_TYPE_BUY ? "BUY" : "SELL", count, missing ? "Y" : "N",
+               missing ? 0.0 : tpMax - tpMin, tp);
+   SetTP(magic, tp);
+  }
+
+//--- Start-up risk report: what the full ladder costs on THIS account.
+void RiskPreflight()
+  {
+   double tv = SymbolInfoDouble(g_sym, SYMBOL_TRADE_TICK_VALUE);
+   double ts = SymbolInfoDouble(g_sym, SYMBOL_TRADE_TICK_SIZE);
+   if(tv <= 0 || ts <= 0) return;
+   double perPt = tv * g_point / ts;           // $ per point per 1.0 lot
+   double lots = 0, lossAtLast = 0;
+   for(int k = 1; k <= MaxLayers; k++)
+     {
+      double lot = LotSize(k);
+      lots       += lot;
+      lossAtLast += lot * (MaxLayers - k) * GridSpacingPts * perPt;
+     }
+   double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+   double perPip = lots * 10.0 * perPt;
+   string ccy = AccountInfoString(ACCOUNT_CURRENCY);   // "USC" on cent accounts
+   PrintFormat("PREFLIGHT: full ladder %.2f lots/side over %.1f pips | float at last fill %.2f %s (%.0f%% of bal) | then %.2f %s per pip",
+               lots, (MaxLayers - 1) * GridSpacingPts / 10.0, lossAtLast, ccy,
+               bal > 0 ? lossAtLast / bal * 100.0 : 0, perPip, ccy);
+   if(EmergencyCloseDD_Pct > 0)
+      PrintFormat("PREFLIGHT: basket stop closes at -%.2f %s grid float (%.1f%% of RefCap %.2f)",
+                  EmergencyCloseDD_Pct / 100.0 * g_refCapital, ccy, EmergencyCloseDD_Pct, g_refCapital);
+   else if(bal > 0 && lossAtLast > 0.5 * bal)
+      PrintFormat("!!! PREFLIGHT WARNING: no basket stop and a full ladder costs %.0f%% of balance. "
+                  "Consider EmergencyCloseDD_Pct > 0 or a smaller ladder.", lossAtLast / bal * 100.0);
+  }
+
+//+------------------------------------------------------------------+
+//| NEWS FILTER                                                       |
+//+------------------------------------------------------------------+
+void NewsSetupCurrencies()
+  {
+   string list = NewsCurrencies;
+   if(StringLen(list) == 0)
+      list = SymbolInfoString(g_sym, SYMBOL_CURRENCY_BASE) + "," + SymbolInfoString(g_sym, SYMBOL_CURRENCY_PROFIT);
+   string parts[];
+   int n = StringSplit(list, ',', parts);
+   ArrayResize(g_newsCcys, 0);
+   for(int i = 0; i < n; i++)
+     {
+      string c = parts[i];
+      StringTrimLeft(c);
+      StringTrimRight(c);
+      StringToUpper(c);
+      if(StringLen(c) != 3 || NewsCcyWanted(c)) continue;
+      int k = ArraySize(g_newsCcys);
+      ArrayResize(g_newsCcys, k + 1);
+      g_newsCcys[k] = c;
+     }
+  }
+
+bool NewsCcyWanted(string c)
+  {
+   for(int i = 0; i < ArraySize(g_newsCcys); i++)
+      if(g_newsCcys[i] == c) return true;
+   return false;
+  }
+
+string NewsCcyList()
+  {
+   string s = "";
+   for(int i = 0; i < ArraySize(g_newsCcys); i++)
+      s += (i > 0 ? "," : "") + g_newsCcys[i];
+   return s;
+  }
+
+int NewsImpFromStr(string s)
+  {
+   StringTrimLeft(s);
+   StringTrimRight(s);
+   StringToUpper(s);
+   if(s == "HIGH" || s == "3")                     return 3;
+   if(s == "MEDIUM" || s == "MODERATE" || s == "2") return 2;
+   if(s == "LOW" || s == "1")                      return 1;
+   return 0;
+  }
+
+void NewsClear()
+  {
+   g_newsCount = 0;
+   g_newsIdx   = 0;
+   ArrayResize(g_newsTime, 0);
+   ArrayResize(g_newsTitle, 0);
+   ArrayResize(g_newsCur, 0);
+  }
+
+//--- insert keeping ascending time order (input is usually already sorted -> O(1))
+void NewsAdd(datetime t, string cur, string title)
+  {
+   int n = g_newsCount;
+   ArrayResize(g_newsTime,  n + 1, 512);
+   ArrayResize(g_newsTitle, n + 1, 512);
+   ArrayResize(g_newsCur,   n + 1, 512);
+   int j = n;
+   while(j > 0 && g_newsTime[j - 1] > t)
+     {
+      g_newsTime[j]  = g_newsTime[j - 1];
+      g_newsTitle[j] = g_newsTitle[j - 1];
+      g_newsCur[j]   = g_newsCur[j - 1];
+      j--;
+     }
+   g_newsTime[j]  = t;
+   g_newsTitle[j] = title;
+   g_newsCur[j]   = cur;
+   g_newsCount    = n + 1;
+  }
+
+//--- CSV: "YYYY.MM.DD HH:MI,CUR,IMPORTANCE,TITLE" in NY-close server time ('#' = comment)
+int NewsLoadCsv()
+  {
+   int h = FileOpen(NewsCsvFile, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON);
+   if(h == INVALID_HANDLE)
+      h = FileOpen(NewsCsvFile, FILE_READ | FILE_TXT | FILE_ANSI);
+   if(h == INVALID_HANDLE)
+      return -1;
+   NewsClear();
+   while(!FileIsEnding(h))
+     {
+      string line = FileReadString(h);
+      if(StringLen(line) < 16 || StringGetCharacter(line, 0) == '#') continue;
+      string f[];
+      if(StringSplit(line, ',', f) < 3) continue;
+      string cur = f[1];
+      StringTrimLeft(cur);
+      StringTrimRight(cur);
+      StringToUpper(cur);
+      if(!NewsCcyWanted(cur)) continue;
+      if(NewsImpFromStr(f[2]) < (int)NewsMinImportance) continue;
+      datetime t = StringToTime(f[0]);
+      if(t <= 0) continue;
+      NewsAdd(t + NewsCsvShiftHours * 3600, cur, ArraySize(f) > 3 ? f[3] : "event");
+     }
+   FileClose(h);
+   g_newsFromCsv = true;
+   return g_newsCount;
+  }
+
+//--- Live MQL5 economic calendar (times are already trade-server time)
+int NewsLoadCalendar()
+  {
+   datetime now  = TimeTradeServer();
+   datetime from = now - 6 * 3600;
+   datetime to   = now + 3 * 86400;
+   int ok = 0;
+   NewsClear();
+   for(int c = 0; c < ArraySize(g_newsCcys); c++)
+     {
+      MqlCalendarValue vals[];
+      ResetLastError();
+      if(!CalendarValueHistory(vals, from, to, NULL, g_newsCcys[c]))
+        {
+         if(DebugLog) PrintFormat("  news: calendar query %s failed err=%d", g_newsCcys[c], GetLastError());
+         continue;
+        }
+      ok++;
+      for(int i = 0; i < ArraySize(vals); i++)
+        {
+         MqlCalendarEvent ev;
+         if(!CalendarEventById(vals[i].event_id, ev)) continue;
+         if((int)ev.importance < (int)NewsMinImportance) continue;
+         if(ev.time_mode != CALENDAR_TIMEMODE_DATETIME) continue;
+         NewsAdd(vals[i].time, g_newsCcys[c], ev.name);
+        }
+     }
+   if(ok == 0) return -1;
+   g_newsFromCsv = false;
+   return g_newsCount;
+  }
+
+//--- Load once in the tester (CSV), refresh every 30 min live (calendar, CSV fallback)
+void NewsRefresh(bool force)
+  {
+   static bool s_warned = false;
+   bool tester = (MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION));
+   if(tester)
+     {
+      if(!force && g_newsLoadedAt > 0) return;
+      g_newsLoadedAt = TimeCurrent();
+      if(NewsLoadCsv() < 0 && !s_warned)
+        {
+         s_warned = true;
+         PrintFormat("!!! NEWS: '%s' not found in MQL5\\Files or Common\\Files -> news filter INACTIVE in tester",
+                     NewsCsvFile);
+        }
+      return;
+     }
+   if(!force && g_newsLoadedAt > 0 && TimeCurrent() - g_newsLoadedAt < 30 * 60) return;
+   g_newsLoadedAt = TimeCurrent();
+   int n = NewsLoadCalendar();
+   if(n < 0)
+     {
+      n = NewsLoadCsv();
+      if(n < 0 && !s_warned)
+        {
+         s_warned = true;
+         Print("!!! NEWS: economic calendar unavailable and no CSV fallback -> news filter INACTIVE");
+        }
+      else if(n >= 0)
+         PrintFormat("  news: calendar unavailable, using CSV fallback (%d events)", n);
+     }
+   else if(DebugLog)
+      PrintFormat("  news: %d upcoming high-impact event(s) for %s", n, NewsCcyList());
+  }
+
+//--- Sets g_newsBlock / g_newsPre / g_newsNextT / g_newsNextName for time 'now'
+void NewsEval(datetime now)
+  {
+   g_newsBlock = false;
+   g_newsPre   = false;
+   g_newsNextT = 0;
+   g_newsNextName = "";
+   if(g_newsCount == 0) return;
+
+   int before = NewsBeforeMin * 60;
+   if(NewsCloseMode != NEWS_CLOSE_NONE && NewsCloseMin > NewsBeforeMin)
+      before = NewsCloseMin * 60;   // never re-open a grid between the pre-close and the event
+   int after = NewsAfterMin * 60;
+
+   while(g_newsIdx < g_newsCount && g_newsTime[g_newsIdx] + after < now)
+      g_newsIdx++;
+   for(int j = g_newsIdx; j < g_newsCount; j++)
+     {
+      datetime t = g_newsTime[j];
+      if(g_newsNextT == 0)
+        {
+         g_newsNextT    = t;
+         g_newsNextName = g_newsCur[j] + " " + g_newsTitle[j];
+        }
+      if(t - before > now) break;
+      if(now >= t - before && now <= t + after)
+         g_newsBlock = true;
+      if(NewsCloseMode != NEWS_CLOSE_NONE && now >= t - NewsCloseMin * 60 && now < t)
+         g_newsPre = true;
+     }
+  }
+
+string NewsPanelStr()
+  {
+   if(!UseNewsFilter) return "OFF";
+   if(g_newsCount == 0) return "ON (no events loaded)";
+   if(g_newsNextT == 0) return StringFormat("ON  %s, none upcoming", g_newsFromCsv ? "csv" : "cal");
+   long mins = ((long)g_newsNextT - (long)TimeCurrent()) / 60;
+   return StringFormat("%s %s %s (%s)", g_newsBlock ? "BLOCK" : "ok",
+                       TimeToString(g_newsNextT, TIME_DATE | TIME_MINUTES), g_newsNextName,
+                       mins >= 0 ? StringFormat("in %dm", (int)mins) : "now");
   }
 
 //--- next allowed server hour (for panel) ---
@@ -810,7 +1304,7 @@ void Panel()
    double wr = (total > 0) ? (100.0 * g_wins / total) : 0;
 
    string s = "";
-   s += "════ BayesianGrid v6.12 PROD ════\n";
+   s += "════ BayesianGrid v6.13 PROD ════\n";
    s += StringFormat("%s  |  %s\n", g_sym, TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES));
    s += StringFormat("Bal %.2f  Eq %.2f  AcctDD %.2f%%\n", bal, eq, acctDD);
    s += StringFormat("GridFloat $%.2f  GridDD %.2f%%/cap %.0f\n", gridFloat, gridDD, g_refCapital);
@@ -827,14 +1321,23 @@ void Panel()
                      UseTimeFilter ? "ON" : "OFF",
                      (UseTimeFilter && HoursInGMT) ? StringFormat(" (GMT+%d)", ServerGMTOffset) : "",
                      NextAllowedHourStr());
+   s += "News " + NewsPanelStr() + "\n";
    string guards = "";
    if(MaxEquityDD_Pct > 0)      guards += StringFormat("DDhalt %.0f%% ", MaxEquityDD_Pct);
    if(EmergencyCloseDD_Pct > 0) guards += StringFormat("Basket %.0f%% ", EmergencyCloseDD_Pct);
    if(MaxSpreadPts > 0)         guards += StringFormat("MaxSprd %d ", MaxSpreadPts);
    if(CloseOnFriday)            guards += StringFormat("FriClose@%d ", FridayCloseHour);
+   if(UseNewsFilter && NewsPauseLayers)         guards += "NewsPause ";
+   if(UseNewsFilter && NewsCloseMode != NEWS_CLOSE_NONE) guards += StringFormat("NewsClose%d ", (int)NewsCloseMode);
    if(guards == "")             guards = "none (no SL active)";
    s += "Guards: " + guards + "\n";
-   if(g_halt) s += ">>> EMERGENCY HALT LATCHED <<<\n";
+   if(g_halt)
+     {
+      if(HaltCooldownMin > 0 && g_haltUntil > 0)
+         s += StringFormat(">>> EMERGENCY HALT — resumes %s <<<\n", TimeToString(g_haltUntil, TIME_DATE | TIME_MINUTES));
+      else
+         s += ">>> EMERGENCY HALT LATCHED <<<\n";
+     }
    s += "═════════════════════════════";
 
    Comment(s);

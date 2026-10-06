@@ -1,0 +1,1 @@
+[wfo] folds=6 mean IS CAGR=68.6%  mean OOS CAGR=-46.7%  WF-efficiency=-0.68  OOS folds ruined=2  stitched OOS growth of $100 -> $0.01  [account=cent_swapfree]

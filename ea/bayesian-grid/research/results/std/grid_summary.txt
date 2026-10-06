@@ -1,0 +1,4 @@
+[grid] configs=2400  IS-survivors=0 (0%)  OOS-survivors=0
+[grid] Spearman(IS score, OOS score) = 0.215
+[grid] top-20 by IS: OOS ruined=20/20, median OOS CAGR=-52.1%  median OOS DD=92.3%
+[grid] configs positive in BOTH IS and OOS without ruin: 0

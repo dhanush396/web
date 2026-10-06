@@ -1,0 +1,27 @@
+{
+ "bayes_v1_best": {
+  "BaseLot": 0.03,
+  "MaxTotalLots": 100.0,
+  "RefCapital": 0,
+  "NewsCloseMin": 15,
+  "FlatLayers": 99,
+  "LotIncrement": 0.0,
+  "LotIncEvery": 1,
+  "GridSpacingPts": 160,
+  "TP_Pips": 29.5,
+  "MaxLayers": 12,
+  "EmergencyCloseDD_Pct": 20,
+  "MaxEquityDD_Pct": 5,
+  "HaltCooldownMin": 4320,
+  "NewsFilter": 1,
+  "NewsBeforeMin": 120,
+  "NewsAfterMin": 120,
+  "NewsPauseLayers": 1,
+  "NewsCloseMode": 1,
+  "CloseOnFriday": 0,
+  "FridayCloseHour": 20,
+  "MaxSpreadPts": 0,
+  "UseTimeFilter": 1,
+  "Hours": "2,4,11,13,14,15,16,17,18,21,22"
+ }
+}

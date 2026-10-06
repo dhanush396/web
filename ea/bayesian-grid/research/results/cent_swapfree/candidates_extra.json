@@ -1,0 +1,27 @@
+{
+ "conservative_B_0.01": {
+  "BaseLot": 0.01,
+  "MaxTotalLots": 100.0,
+  "RefCapital": 0,
+  "NewsCloseMin": 15,
+  "FlatLayers": 99,
+  "LotIncrement": 0.0,
+  "LotIncEvery": 1,
+  "GridSpacingPts": 250,
+  "TP_Pips": 55.0,
+  "MaxLayers": 14,
+  "EmergencyCloseDD_Pct": 50,
+  "MaxEquityDD_Pct": 0,
+  "HaltCooldownMin": 4320,
+  "NewsFilter": 1,
+  "NewsBeforeMin": 60,
+  "NewsAfterMin": 120,
+  "NewsPauseLayers": 1,
+  "NewsCloseMode": 0,
+  "CloseOnFriday": 0,
+  "FridayCloseHour": 18,
+  "MaxSpreadPts": 0,
+  "UseTimeFilter": 1,
+  "Hours": "20,21,22,23"
+ }
+}
