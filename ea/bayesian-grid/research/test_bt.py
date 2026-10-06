@@ -136,11 +136,79 @@ def test_daily_loss_limit():
 def test_random_path_stays_in_bar_and_is_seeded():
     import numpy as np
     wp = np.zeros(4 + 3 * 5)
+    wt = np.zeros(4 + 3 * 5)
     np.random.seed(3)
-    k = bt._build_path(wp, 1.1001, 1.1004, 1.0998, 1.1002, 5)
+    k = bt._build_path(wp, wt, 1.1001, 1.1004, 1.0998, 1.1002, 5)
     pts = wp[:k]
     assert k == 4 + 3 * 5 and pts[0] == 1.1001 and pts[-1] == 1.1002
     assert pts.max() == 1.1004 and pts.min() == 1.0998
+    assert np.all(np.diff(wt[:k]) > 0) and wt[0] == 0.0 and wt[k - 1] < 1.0  # time moves forward
+
+
+def test_v7_hold_in_seconds():
+    flat = (1.10000, 1.10000, 1.10000, 1.10000)
+    p = bt.make_params(BaseLot=0.01, GridSpacingPts=100, TP_Pips=5, MaxLayers=5, MaxHoldSec=30, **ZERO_COST)
+    r = bt.run(Synth([flat] * 3), p)
+    # 4-point path waypoints sit at 0/20/40/59 s: the 30 s limit fires at the 40 s waypoint
+    assert r["time_stops"] == 2 and 30 <= r["max_hold_sec"] <= 40 + 1e-6, r
+
+
+def test_v7_l1_anchored_stop():
+    bars = [(1.10000, 1.10000, 1.10000, 1.10000), (1.10000, 1.10000, 1.09700, 1.09700)]
+    p = bt.make_params(BaseLot=0.01, GridSpacingPts=500, TP_Pips=5, MaxLayers=5, StopPips=10, **ZERO_COST)
+    r = bt.run(Synth(bars), p)
+    assert r["side_stops"] == 1 and r["wins"] == 1, r
+    assert abs(r["final_balance"] - (1000 + 0.5 - 1.0)) < 1e-6, r["final_balance"]
+
+
+def test_v7_ladder_fit_to_budget():
+    p = bt.make_params(BaseLot=0.01, FlatLayers=99, GridSpacingPts=30, MaxLayers=10, StopPips=10, **ZERO_COST)
+    assert bt._fit_layers(p, 0.0, 1000.0) == 4  # layers 5+ would sit below the stop
+    p = bt.make_params(BaseLot=0.01, FlatLayers=99, GridSpacingPts=30, MaxLayers=10, StopPips=10,
+                       MaxBasketRiskPct=0.2, **ZERO_COST)
+    assert bt._fit_layers(p, 0.0, 1000.0) == 2  # $1.0 + $0.7 fits $2.0; + $0.4 does not
+
+
+def test_v7_add_pacing():
+    bars = [(1.10000, 1.10000, 1.10000, 1.10000), (1.10000, 1.10000, 1.09650, 1.09650)]
+    kw = dict(BaseLot=0.01, FlatLayers=99, GridSpacingPts=100, TP_Pips=50, MaxLayers=10, **ZERO_COST)
+    free = bt.run(Synth(bars), bt.make_params(**kw))
+    paced = bt.run(Synth(bars), bt.make_params(AddMinSec=60, **kw))
+    assert free["layers_added"] == 3 and paced["layers_added"] == 1, (free, paced)
+
+
+def test_v7_peak_kill_latch():
+    bars = [(1.10000, 1.10000, 1.10000, 1.10000)] + [
+        (1.10000 - 0.001 * k, 1.10000 - 0.001 * k, 1.09900 - 0.001 * k, 1.09900 - 0.001 * k) for k in range(10)]
+    bars += [bars[-1]] * 40
+    p = bt.make_params(BaseLot=0.01, FlatLayers=99, GridSpacingPts=100, TP_Pips=5, MaxLayers=5, EntryTFMin=1,
+                       PeakKillPct=0.5, **ZERO_COST)
+    r = bt.run(Synth(bars), p)
+    assert r["killed"] == 1 and r["final_balance"] == r["final_equity"], r
+
+
+def test_v7_stretch_signal_has_no_lookahead():
+    import numpy as np
+    rng = np.random.default_rng(0)
+    c = 1.1 + np.cumsum(rng.normal(0, 0.0001, 3000))
+    o = np.concatenate([[c[0]], c[:-1]])
+    bars = [(o[i], max(o[i], c[i]) + 0.00005, min(o[i], c[i]) - 0.00005, c[i]) for i in range(3000)]
+    d1 = Synth(bars)
+    s1 = bt.Data.stretch_signal(_as_data(d1), 1.5, 90, 2.0, 0.0001)
+    bars2 = list(bars)
+    bars2[2000] = (o[2000], o[2000] + 0.01, o[2000] - 0.01, o[2000] - 0.009)  # violent bar 2000
+    s2 = bt.Data.stretch_signal(_as_data(Synth(bars2)), 1.5, 90, 2.0, 0.0001)
+    assert np.array_equal(s1[:2001], s2[:2001])  # signals up to bar 2000's open cannot see bar 2000
+    assert (s1 != 0).sum() > 0
+
+
+def _as_data(sy):
+    import numpy as np
+    d = bt.Data.__new__(bt.Data)
+    d.t, d.o, d.h, d.l, d.c = sy.t, sy.o, sy.h, sy.l, sy.c
+    d.spread = np.zeros(0)
+    d._sig = {}
+    return d
 
 
 if __name__ == "__main__":

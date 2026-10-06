@@ -35,6 +35,9 @@ PARAM_NAMES = [
     # v6.14 high-frequency scalper inputs (indices 38..) + simulation controls
     "MaxHoldMin", "EntryTFMin", "LotMultiplier", "SessStartMin", "SessEndMin", "SessCloseAtEnd",
     "DailyLossPct", "PathPoints", "PathSeed", "UseSpreadProfile",
+    # v7 HF-grid modules (indices 48..)
+    "MaxHoldSec", "NoAddAfterSec", "StopPips", "MaxBasketRiskPct", "AddMinSec", "PeakKillPct",
+    "EntryMode", "ZEntry", "ZEmaBars", "TrendTMax",
 ]
 PI = {n: i for i, n in enumerate(PARAM_NAMES)}
 
@@ -50,6 +53,8 @@ EA_DEFAULTS = dict(
     VolMin=0.01, VolStep=0.01, HedgeMarginSum=0, Point=0.00001,
     MaxHoldMin=0, EntryTFMin=15, LotMultiplier=0.0, SessStartMin=-1, SessEndMin=-1, SessCloseAtEnd=0,
     DailyLossPct=0.0, PathPoints=0, PathSeed=1, UseSpreadProfile=0,
+    MaxHoldSec=0, NoAddAfterSec=0, StopPips=0.0, MaxBasketRiskPct=0.0, AddMinSec=0, PeakKillPct=0.0,
+    EntryMode=0, ZEntry=1.5, ZEmaBars=90, TrendTMax=2.0,
 )
 
 # EURUSD spread multiplier by SERVER hour (NY-close time): thin after rollover and late
@@ -87,7 +92,8 @@ WINS, LOSSES, BASKETS, STOPOUTS, FRICLOSE, NEWSCLOSE = range(19, 25)
 COMM, SWAP, LAYERS, MAXN, HITMAX, WORSTFLOAT, ADDBLOCK, TPPROFIT, STOPLOSS, GRIDS = range(25, 35)
 MINFREE_RATIO, SIDEWORST0, SIDEWORST1, WORSTSIDE = range(35, 39)
 START0, START1, DAYBAL, DAYHALT, TIMESTOPS, SESSCLOSE, DAYSTOPS, HOLDSUM, HOLDN, MAXHOLD = range(39, 49)
-NSTATE = 49
+FIRST0, FIRST1, EFFML0, EFFML1, LASTADD0, LASTADD1, SIDESTOPS, KILL, EQPEAK = range(49, 58)
+NSTATE = 58
 
 STAT_NAMES = [
     "final_balance", "final_equity", "max_dd_pct", "max_dd_abs", "min_equity", "wins", "losses",
@@ -95,6 +101,7 @@ STAT_NAMES = [
     "layers_added", "max_layers_used", "grids_hit_max", "worst_float", "adds_blocked",
     "tp_profit", "stop_losses", "grids_opened", "worst_side_float",
     "time_stops", "session_closes", "daily_stops", "avg_hold_min", "max_hold_min",
+    "side_stops", "killed", "avg_hold_sec", "max_hold_sec",
 ]
 
 
@@ -211,8 +218,14 @@ def _open(S, side, fill, lot, p, t):
     if (S[N0] if side == 0 else S[N1]) == 0:
         if side == 0:
             S[START0] = t
+            S[FIRST0] = fill
         else:
             S[START1] = t
+            S[FIRST1] = fill
+    if side == 0:
+        S[LASTADD0] = t
+    else:
+        S[LASTADD1] = t
     S[BAL] -= half * lot
     S[COMM] += half * lot
     if side == 0:
@@ -232,6 +245,9 @@ def _try_add(S, side, m, hs, p, t):
     """Add next layer at mid m (fill at ask/bid + slippage). Returns False if blocked."""
     n = S[N0] if side == 0 else S[N1]
     lot = _lot_size(int(n) + 1, p)
+    if p[9] > 0 and 2.0 * hs / p[37] > p[9] + 1e-9:  # v7: spread guard applies to adds too
+        S[ADDBLOCK] += 1
+        return False
     if S[L0] + S[L1] + lot > p[7] + 1e-9:
         S[ADDBLOCK] += 1
         return False
@@ -282,11 +298,12 @@ def _segment(S, a, bnd, hs, p, t, allow0, allow1, refcap):
     """Walk mid price continuously from a to bnd, processing events in order."""
     cs = p[27]
     step = p[4] * p[37]
-    maxl = p[6]
+    stop_d = p[50] * 10.0 * p[37]
+    slip = p[31] * p[37]
     cur = a
     down = bnd < a
-    ok0 = allow0
-    ok1 = allow1
+    ok0 = allow0 and _adds_ok(S, 0, p, t)
+    ok1 = allow1 and _adds_ok(S, 1, p, t)
     for _ in range(10000):
         A, B = _lin(S, hs, cs)
         x1, x2 = _thresholds(S, cur, p, refcap)
@@ -303,7 +320,7 @@ def _segment(S, a, bnd, hs, p, t, allow0, allow1, refcap):
         ev = 0
         if down:
             best = -1e18
-            if ok0 and S[N0] > 0 and S[N0] < maxl:
+            if ok0 and S[N0] > 0 and S[N0] < S[EFFML0]:
                 lv = S[LAST0] - step - hs
                 if lv > cur:
                     lv = cur
@@ -315,6 +332,12 @@ def _segment(S, a, bnd, hs, p, t, allow0, allow1, refcap):
                     lv = cur
                 if lv >= bnd - 1e-9 and lv > best:
                     best = lv; ev = 2
+            if S[N0] > 0 and stop_d > 0:
+                lv = S[FIRST0] - stop_d + hs  # BUY stop: bid <= L1 ask - StopPips
+                if lv > cur:
+                    lv = cur
+                if lv >= bnd - 1e-9 and lv > best:
+                    best = lv; ev = 5
             if A > 0 and S[N0] + S[N1] > 0:
                 for k in range(2):
                     x = x2 if k == 0 else x1
@@ -324,7 +347,7 @@ def _segment(S, a, bnd, hs, p, t, allow0, allow1, refcap):
                             best = ms; ev = 3 + k
         else:
             best = 1e18
-            if ok1 and S[N1] > 0 and S[N1] < maxl:
+            if ok1 and S[N1] > 0 and S[N1] < S[EFFML1]:
                 lv = S[LAST1] + step + hs  # bid >= last + step
                 if lv < cur:
                     lv = cur
@@ -336,6 +359,12 @@ def _segment(S, a, bnd, hs, p, t, allow0, allow1, refcap):
                     lv = cur
                 if lv <= bnd + 1e-9 and lv < best:
                     best = lv; ev = 2
+            if S[N1] > 0 and stop_d > 0:
+                lv = S[FIRST1] + stop_d - hs  # SELL stop: ask >= L1 bid + StopPips
+                if lv < cur:
+                    lv = cur
+                if lv <= bnd + 1e-9 and lv < best:
+                    best = lv; ev = 5
             if A < 0 and S[N0] + S[N1] > 0:
                 for k in range(2):
                     x = x2 if k == 0 else x1
@@ -355,6 +384,18 @@ def _segment(S, a, bnd, hs, p, t, allow0, allow1, refcap):
                     ok0 = False
                 else:
                     ok1 = False
+            elif p[52] > 0:  # AddMinSec: at most one add per pacing interval
+                if side == 0:
+                    ok0 = False
+                else:
+                    ok1 = False
+        elif ev == 5:
+            side = 0 if down else 1
+            _track(S, cur, hs, cs)
+            fillm = (cur - slip) if side == 0 else (cur + slip)
+            S[STOPLOSS] += _close_side(S, side, fillm, hs, p, t)
+            S[SIDESTOPS] += 1
+            _track(S, cur, hs, cs)
         elif ev == 2:
             side = 1 if down else 0
             pnl = _close_side(S, side, cur, hs, p, t)
@@ -389,6 +430,14 @@ def _jump(S, m, hs, p, t, allow0, allow1, refcap):
             S[WINS] += 1
         else:
             S[LOSSES] += 1
+    stop_d = p[50] * 10.0 * p[37]
+    if stop_d > 0:
+        if S[N0] > 0 and m - hs <= S[FIRST0] - stop_d:
+            S[STOPLOSS] += _close_side(S, 0, m - p[31] * p[37], hs, p, t)
+            S[SIDESTOPS] += 1
+        if S[N1] > 0 and m + hs >= S[FIRST1] + stop_d:
+            S[STOPLOSS] += _close_side(S, 1, m + p[31] * p[37], hs, p, t)
+            S[SIDESTOPS] += 1
     _track(S, m, hs, cs)
     if S[N0] + S[N1] > 0:
         A, B = _lin(S, hs, cs)
@@ -398,14 +447,52 @@ def _jump(S, m, hs, p, t, allow0, allow1, refcap):
             _loss_close(S, m, hs, p, t, True)
         elif fl <= -x1:
             _loss_close(S, m, hs, p, t, False)
-    if allow0 and S[N0] > 0 and S[N0] < p[6] and m + hs <= S[LAST0] - step:
+    if allow0 and _adds_ok(S, 0, p, t) and S[N0] > 0 and S[N0] < S[EFFML0] and m + hs <= S[LAST0] - step:
         _try_add(S, 0, m, hs, p, t)
-    if allow1 and S[N1] > 0 and S[N1] < p[6] and m - hs >= S[LAST1] + step:
+    if allow1 and _adds_ok(S, 1, p, t) and S[N1] > 0 and S[N1] < S[EFFML1] and m - hs >= S[LAST1] + step:
         _try_add(S, 1, m, hs, p, t)
 
 
 @njit(cache=True)
-def run_core(t, o, h, l, c, p, hmap, news, rec_daily):
+def _adds_ok(S, side, p, t):
+    """v7 add gating: no adds after NoAddAfterSec of basket age, at most one add per AddMinSec."""
+    start = S[START0] if side == 0 else S[START1]
+    last = S[LASTADD0] if side == 0 else S[LASTADD1]
+    if p[49] > 0 and t - start >= p[49]:
+        return False
+    if p[52] > 0 and t - last < p[52]:
+        return False
+    return True
+
+
+@njit(cache=True)
+def _fit_layers(p, hs, eq):
+    """v7 pre-trade ladder fit: the deepest ladder whose loss at the L1-anchored stop
+    (incl. stop slippage and commission) fits MaxBasketRiskPct of equity."""
+    maxl = int(p[6])
+    stop_d = p[50] * 10.0 * p[37]
+    if stop_d <= 0:
+        return maxl
+    step = p[4] * p[37]
+    slip = p[31] * p[37]
+    budget = p[51] / 100.0 * eq if p[51] > 0 else 1e18
+    worst = 0.0
+    n = 0
+    for k in range(1, maxl + 1):
+        dist = stop_d - (k - 1) * step  # this layer's fill (ask) to the stop (bid)
+        if dist <= 0:
+            break
+        lot = _lot_size(k, p)
+        add = lot * p[27] * (dist + slip) + lot * p[28]
+        if worst + add > budget:
+            break
+        worst += add
+        n = k
+    return n
+
+
+@njit(cache=True)
+def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
     n = t.shape[0]
     S = np.zeros(NSTATE)
     S[BAL] = p[24]
@@ -430,20 +517,27 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily):
     close_before = p[23] * 60.0
     npts = int(min(max(p[45], 0), 10))
     wp = np.zeros(4 + 3 * npts)
+    wt = np.zeros(4 + 3 * npts)  # time of each waypoint as a fraction of the minute
     if npts > 0:
         np.random.seed(int(p[46]))
     tf_sec = max(p[39], 1.0) * 60.0
-    hold_sec = p[38] * 60.0
+    hold_sec = p[48] if p[48] > 0 else p[38] * 60.0  # v7 seconds clock, else v6.14 minutes
+    use_sig = p[54] > 0 and sig.shape[0] == n
+    use_sprd = sprd.shape[0] == n
+    S[EQPEAK] = p[24]
     sess_on = p[41] >= 0 and p[42] >= 0 and p[41] != p[42]
     S[DAYBAL] = p[24]
     for i in range(n):
         ti = t[i]
         mod = (ti % 86400) // 60
-        spr_pts = p[32]
-        if p[47] > 0:
-            spr_pts = spr_pts * SPREAD_PROFILE[int(mod // 60)]
-        if mod >= 1435 or mod < 15:
-            spr_pts = spr_pts * p[33]
+        if use_sprd:
+            spr_pts = sprd[i]  # broker bar spread from an MT5 export
+        else:
+            spr_pts = p[32]
+            if p[47] > 0:
+                spr_pts = spr_pts * SPREAD_PROFILE[int(mod // 60)]
+            if mod >= 1435 or mod < 15:
+                spr_pts = spr_pts * p[33]
         hs = spr_pts * point * 0.5
         day = ti // 86400
         refcap = p[12] if p[12] > 0 else (S[BAL] if p[12] < 0 else p[24])
@@ -501,13 +595,18 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily):
             prev_c = c[i]
             prev_t = ti
             continue
-        # ---- max holding time: close a side whose FIRST position is >= MaxHoldMin old
+        # ---- max holding time: close a side whose FIRST position is >= the hold limit old
         if hold_sec > 0:
+            _time_stops(S, o[i], hs, p, ti, hold_sec)
+        # ---- v7 peak-equity kill latch: flatten and never open again
+        a_, b_ = _lin(S, hs, cs)
+        eq_now = S[BAL] + a_ * o[i] + b_
+        if eq_now > S[EQPEAK]:
+            S[EQPEAK] = eq_now
+        if p[53] > 0 and S[KILL] == 0 and eq_now <= S[EQPEAK] * (1.0 - p[53] / 100.0):
             for sd in range(2):
-                if (S[N0] if sd == 0 else S[N1]) > 0:
-                    if ti - (S[START0] if sd == 0 else S[START1]) >= hold_sec:
-                        S[STOPLOSS] += _close_side(S, sd, o[i], hs, p, ti)
-                        S[TIMESTOPS] += 1
+                S[STOPLOSS] += _close_side(S, sd, o[i], hs, p, ti)
+            S[KILL] = 1
         # ---- daily loss limit: flatten and stop opening until the next server day
         if p[44] > 0 and S[DAYHALT] == 0 and S[DAYBAL] > 0:
             a_, b_ = _lin(S, hs, cs)
@@ -559,23 +658,35 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily):
                 spread_ok = p[9] <= 0 or spr_pts <= p[9]
                 news_ok = not in_news
                 if (time_ok and margin_ok and dd_ok and S[HALT] == 0 and spread_ok and news_ok
-                        and in_sess and S[DAYHALT] == 0):
+                        and in_sess and S[DAYHALT] == 0 and S[KILL] == 0):
                     tpd = p[5] * 10.0 * point
-                    if S[N0] == 0 and S[L0] + S[L1] + lot1 <= p[7] + 1e-9:
-                        px = o[i] + hs
-                        _open(S, 0, px, lot1, p, ti)
-                        S[TP0] = np.round((px + tpd) / point) * point
-                        S[GRIDS] += 1
-                    if S[N1] == 0 and S[L0] + S[L1] + lot1 <= p[7] + 1e-9:
-                        px = o[i] - hs
-                        _open(S, 1, px, lot1, p, ti)
-                        S[TP1] = np.round((px - tpd) / point) * point
-                        S[GRIDS] += 1
+                    want0 = True
+                    want1 = True
+                    if use_sig:  # v7 stretch mode: open only the reversion side
+                        want0 = sig[i] > 0
+                        want1 = sig[i] < 0
+                    effml = _fit_layers(p, hs, eq)  # v7 pre-trade ladder fit to the risk budget
+                    if effml >= 1:
+                        if want0 and S[N0] == 0 and S[L0] + S[L1] + lot1 <= p[7] + 1e-9:
+                            px = o[i] + hs
+                            _open(S, 0, px, lot1, p, ti)
+                            S[TP0] = np.round((px + tpd) / point) * point
+                            S[EFFML0] = effml
+                            S[GRIDS] += 1
+                        if want1 and S[N1] == 0 and S[L0] + S[L1] + lot1 <= p[7] + 1e-9:
+                            px = o[i] - hs
+                            _open(S, 1, px, lot1, p, ti)
+                            S[TP1] = np.round((px - tpd) / point) * point
+                            S[EFFML1] = effml
+                            S[GRIDS] += 1
         # ---- intra-bar path
-        nwp = _build_path(wp, o[i], h[i], l[i], c[i], npts)
+        nwp = _build_path(wp, wt, o[i], h[i], l[i], c[i], npts)
         for k in range(nwp - 1):
+            tk = ti + wt[k] * 60.0
             if wp[k + 1] != wp[k]:
-                _segment(S, wp[k], wp[k + 1], hs, p, ti, allow, allow, refcap)
+                _segment(S, wp[k], wp[k + 1], hs, p, tk, allow, allow, refcap)
+            if hold_sec > 0:  # sub-minute clock: check the hold limit at every waypoint
+                _time_stops(S, wp[k + 1], hs, p, ti + wt[k + 1] * 60.0, hold_sec)
         prev_c = c[i]
         prev_t = ti
     # final
@@ -596,16 +707,27 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily):
     out[22] = S[TIMESTOPS]; out[23] = S[SESSCLOSE]; out[24] = S[DAYSTOPS]
     out[25] = S[HOLDSUM] / S[HOLDN] if S[HOLDN] > 0 else 0.0
     out[26] = S[MAXHOLD]
+    out[27] = S[SIDESTOPS]; out[28] = S[KILL]
+    out[29] = out[25] * 60.0; out[30] = out[26] * 60.0
     return out, d_eq, d_bal
 
 
 @njit(cache=True)
 def len_stats():
-    return 27
+    return 31
 
 
 @njit(cache=True)
-def _build_path(wp, o, h, l, c, npts):
+def _time_stops(S, m, hs, p, t, hold_sec):
+    for sd in range(2):
+        if (S[N0] if sd == 0 else S[N1]) > 0:
+            if t - (S[START0] if sd == 0 else S[START1]) >= hold_sec - 1e-6:
+                S[STOPLOSS] += _close_side(S, sd, m, hs, p, t)
+                S[TIMESTOPS] += 1
+
+
+@njit(cache=True)
+def _build_path(wp, wt, o, h, l, c, npts):
     """Waypoints of the price path inside one M1 bar.
 
     npts == 0: deterministic O->L->H->C (bull bar) / O->H->L->C (bear bar), the
@@ -620,6 +742,7 @@ def _build_path(wp, o, h, l, c, npts):
         else:
             wp[1] = h; wp[2] = l
         wp[3] = c
+        wt[0] = 0.0; wt[1] = 1.0 / 3.0; wt[2] = 2.0 / 3.0; wt[3] = 59.0 / 60.0
         return 4
     rng = h - l
     hi_first = np.random.random() < 0.5
@@ -638,10 +761,12 @@ def _build_path(wp, o, h, l, c, npts):
         else:
             a, b, ta, tb = av2, av3, t2, 1.0
         wp[k] = a
+        wt[k] = ta
         k += 1
         sig = 0.5 * rng * np.sqrt(tb - ta)
         for j in range(npts):
             sfrac = (j + 1.0) / (npts + 1.0)
+            wt[k] = ta + (tb - ta) * sfrac
             v = a + (b - a) * sfrac + sig * np.sqrt(sfrac * (1.0 - sfrac)) * np.random.normal()
             if v > h:
                 v = h
@@ -650,6 +775,7 @@ def _build_path(wp, o, h, l, c, npts):
             wp[k] = v
             k += 1
     wp[k] = c
+    wt[k] = 59.0 / 60.0
     return k + 1
 
 
@@ -659,6 +785,9 @@ class Data:
         z = np.load(npz_path)
         self.t = z["t_srv"].astype(np.float64)
         self.o = z["o"]; self.h = z["h"]; self.l = z["l"]; self.c = z["c"]
+        self.spread = z["spread"].astype(np.float64) if "spread" in z.files else np.zeros(0)
+        self.point = float(z["point"]) if "point" in z.files else 0.00001
+        self._sig = {}
 
     def slice(self, start=None, end=None):
         """start/end as 'YYYY-MM-DD' (server time). Returns a view object."""
@@ -667,14 +796,46 @@ class Data:
         hi = len(self.t) if end is None else int(np.searchsorted(self.t, pd.Timestamp(end).value // 10**9))
         d = Data.__new__(Data)
         d.t = self.t[lo:hi]; d.o = self.o[lo:hi]; d.h = self.h[lo:hi]; d.l = self.l[lo:hi]; d.c = self.c[lo:hi]
+        d.spread = self.spread[lo:hi] if self.spread.shape[0] else self.spread
+        d.point = self.point
+        d._sig = {}
         return d
+
+    def stretch_signal(self, zentry, ema_bars, trend_tmax, pip):
+        """v7 entry mode 1 (stretch-and-reclaim), decided on CLOSED bars only:
+        +1 = open the BUY grid at this bar's open, -1 = SELL, 0 = nothing.
+        z = (close - EMA(close)) / sigma15 where sigma15 = EWMA(60-min half-life) std of
+        M1 changes x sqrt(15); the bar must reclaim (close back through its open and the
+        previous extreme) and the 60-bar trend t-stat must be below trend_tmax."""
+        key = (round(zentry, 4), int(ema_bars), round(trend_tmax, 4))
+        if key in self._sig:
+            return self._sig[key]
+        import pandas as pd
+        c = pd.Series(self.c); o = pd.Series(self.o); h = pd.Series(self.h); lo = pd.Series(self.l)
+        r1 = c.diff() / pip
+        sig1 = np.sqrt((r1 ** 2).ewm(halflife=60, min_periods=120).mean())
+        z = (c - c.ewm(span=int(ema_bars), adjust=False).mean()) / pip / (sig1 * np.sqrt(15))
+        trend = r1.rolling(60).sum().abs() / (sig1 * np.sqrt(60))
+        ok = trend < trend_tmax
+        up = ok & (z <= -zentry) & (c > o) & (c > lo.shift(1))
+        dn = ok & (z >= zentry) & (c < o) & (c < h.shift(1))
+        s = np.where(up, 1, np.where(dn, -1, 0)).astype(np.int8)
+        s = np.concatenate([[0], s[:-1]])  # act on the NEXT bar's open: no lookahead
+        self._sig[key] = s
+        return s
 
 
 def run(data, params, hours=ORIGINAL_HOURS, news=None, daily=False):
     if news is None:
         news = np.zeros(0)
+    sig = np.zeros(0, dtype=np.int8)
+    if params[PI["EntryMode"]] > 0:
+        sig = data.stretch_signal(params[PI["ZEntry"]], params[PI["ZEmaBars"]], params[PI["TrendTMax"]],
+                                  10.0 * params[PI["Point"]])
+    sprd = getattr(data, "spread", np.zeros(0))
     stats, d_eq, d_bal = run_core(data.t, data.o, data.h, data.l, data.c, params,
-                                  hour_map(hours), np.asarray(news, dtype=np.float64), daily)
+                                  hour_map(hours), np.asarray(news, dtype=np.float64), daily,
+                                  sig, np.asarray(sprd, dtype=np.float64))
     res = dict(zip(STAT_NAMES, stats.tolist()))
     years = (data.t[-1] - data.t[0]) / (365.25 * 86400)
     b0 = params[PI["Balance"]]
