@@ -57,9 +57,14 @@
 //|     z-score stretch + reclaim on closed M1 bars (trend veto).    |
 //|   - LotMultiplier: geometric ladder from BaseLot (0 = additive). |
 //|   - FIX: SetTP keeps each position's SL (v6 sent SL=0).          |
+//|  v7.01 (adversarial review): per-side layer-1 anchor + flatten   |
+//|   latch (persisted) so a partly failed stop never re-anchors or  |
+//|   averages; EnsureSL never loosens; hedging-account check;       |
+//|   daily-loss state and equity peak persisted; close backoff;     |
+//|   prices rounded to tick size; SL set right after each fill.     |
 //+------------------------------------------------------------------+
-#property copyright   "Jeckov Kanani — Bayesian Grid v7.00 (HF)"
-#property version     "7.00"
+#property copyright   "Jeckov Kanani — Bayesian Grid v7.01 (HF)"
+#property version     "7.01"
 #property strict
 #property tester_file "BG_news_calendar.csv"
 
@@ -194,6 +199,15 @@ double   g_eqPeak       = 0;      // peak of balance + EA float
 bool     g_kill         = false;  // peak-equity kill latch (persisted)
 int      g_sessStart    = -1;     // session window in server minutes, -1 = off
 int      g_sessEnd      = -1;
+double   g_anchorPx[2];           // layer-1 fill of the open basket per side (0 = none), persisted
+long     g_anchorMs[2];           // layer-1 fill time (ms), persisted
+bool     g_sideFlat[2];           // per-side flatten latch: a stop/time/news close is in progress, persisted
+datetime g_nextCloseTry[2];       // close retry backoff per side
+int      g_closeBackoff[2];
+datetime g_lastClose[2];          // time the previous grid of this side closed (stats window)
+datetime g_dayHaltDay   = 0;      // server day on which the daily limit fired
+double   g_savedPeak    = 0;      // last persisted equity peak
+double   g_tickSize     = 0;
 
 //+------------------------------------------------------------------+
 //| GlobalVariable name helper (per symbol + magic set)               |
@@ -232,6 +246,13 @@ int OnInit()
      {
       Print("FATAL: Symbol point size is zero. Aborting.");
       return INIT_PARAMETERS_INCORRECT;
+     }
+   g_tickSize = SymbolInfoDouble(g_sym, SYMBOL_TRADE_TICK_SIZE);
+   if((ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE) != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+     {
+      Print("FATAL: a HEDGING account is required (two independent BUY/SELL grids per symbol). "
+            "On a netting account the grids would merge into one position. Aborting.");
+      return INIT_FAILED;
      }
    if(LotIncEvery < 1 || NewsBeforeMin < 0 || NewsAfterMin < 0 || NewsCloseMin < 0 || HaltCooldownMin < 0)
      {
@@ -295,28 +316,65 @@ int OnInit()
 
    //--- v7: kill latch + equity peak persist across restarts (manual ResetKillLatch to clear) ---
    g_eqPeak = GridEquity();
-   if(GlobalVariableCheck(GvName("eqpeak")) && !ResetKillLatch)
-      g_eqPeak = MathMax(g_eqPeak, GlobalVariableGet(GvName("eqpeak")));
+   bool samePct = GlobalVariableCheck(GvName("killpct")) && MathAbs(GlobalVariableGet(GvName("killpct")) - PeakKillPct) < 1e-9;
+   if(PeakKillPct > 0 && samePct && GlobalVariableCheck(GvName("eqpeak")) && !ResetKillLatch)
+      g_eqPeak = MathMax(g_eqPeak, GlobalVariableGet(GvName("eqpeak")));  // a changed PeakKillPct restarts the peak
+   g_savedPeak = g_eqPeak;
+   GlobalVariableSet(GvName("killpct"), PeakKillPct);
    g_kill = (!ResetKillLatch && GlobalVariableCheck(GvName("kill")) && GlobalVariableGet(GvName("kill")) > 0.5);
    if(ResetKillLatch)
      {
       if(GlobalVariableCheck(GvName("kill")))   GlobalVariableDel(GvName("kill"));
       if(GlobalVariableCheck(GvName("eqpeak"))) GlobalVariableDel(GvName("eqpeak"));
+      Print("!!! ResetKillLatch=true: the kill latch was cleared and will NOT persist while this stays true. "
+            "Set it back to false after this restart.");
      }
-   g_dayStart = 0;
+   g_dayStart = 0;      // restored from GlobalVariables on the first tick (V7AccountGuards)
    g_dayHalt  = false;
    for(int k = 0; k < 2; k++)
      {
-      int cnt = PosCount(k == 0 ? MagicBuy : MagicSell);
-      g_effMaxLayers[k] = (cnt > 0) ? (int)MathMax(cnt, FitLayers(GridEquity())) : MaxLayers;
+      int  magic = (k == 0) ? MagicBuy : MagicSell;
+      int  cnt   = PosCount(magic);
+      string sfx = (k == 0) ? "B" : "S";
+      g_anchorPx[k] = 0; g_anchorMs[k] = 0; g_sideFlat[k] = false;
+      g_nextCloseTry[k] = 0; g_closeBackoff[k] = 0; g_lastClose[k] = 0;
+      if(cnt > 0)
+        {
+         if(GlobalVariableCheck(GvName("anc" + sfx + "px")))
+           {
+            g_anchorPx[k] = GlobalVariableGet(GvName("anc" + sfx + "px"));
+            g_anchorMs[k] = (long)GlobalVariableGet(GvName("anc" + sfx + "ms"));
+           }
+         g_sideFlat[k] = GlobalVariableCheck(GvName("flat" + sfx)) && GlobalVariableGet(GvName("flat" + sfx)) > 0.5;
+         int fit = GlobalVariableCheck(GvName("fit" + sfx)) ? (int)GlobalVariableGet(GvName("fit" + sfx))
+                                                           : FitLayers(GridEquity());
+         g_effMaxLayers[k] = (int)MathMax(cnt, fit);
+        }
+      else
+        {
+         ClearSide(k);
+         g_effMaxLayers[k] = MaxLayers;
+        }
+     }
+   if(MaxBasketRiskPct > 0 && StopPips <= 0)
+      Print("!!! WARNING: MaxBasketRiskPct is ignored while StopPips=0 (no stop -> no bounded worst case).");
+   if(StopPips > 0)
+     {
+      double minStop = (SymbolInfoInteger(g_sym, SYMBOL_TRADE_STOPS_LEVEL) + SymbolInfoInteger(g_sym, SYMBOL_SPREAD)) * g_point;
+      if((StopPips + BrokerSLBufferPips) * 10.0 * g_point <= minStop)
+         PrintFormat("!!! WARNING: StopPips+BrokerSLBufferPips (%.1f pips) is inside stops level + spread (%.1f pips): "
+                     "the broker SL will be rejected and only the virtual stop protects.",
+                     StopPips + BrokerSLBufferPips, minStop / (10.0 * g_point));
      }
 
    //--- A restored halt latch with EA positions still open = an unfinished basket stop ---
-   if(g_halt && PosCount(MagicBuy) + PosCount(MagicSell) > 0)
+   if((g_halt || GlobalVariableCheck(GvName("haltFlatten"))) && PosCount(MagicBuy) + PosCount(MagicSell) > 0)
      {
       g_haltFlatten = true;
-      Print("!!! Restored HALT latch with open EA positions -> will finish closing them");
+      Print("!!! Unfinished basket-stop flatten restored with open EA positions -> will finish closing them");
      }
+   else if(GlobalVariableCheck(GvName("haltFlatten")))
+      GlobalVariableDel(GvName("haltFlatten"));
 
    //--- News filter ---
    NewsSetupCurrencies();
@@ -329,7 +387,7 @@ int OnInit()
    g_buyGridStart  = (bc > 0) ? OldestOpenTime(MagicBuy)  : 0;
    g_sellGridStart = (sc > 0) ? OldestOpenTime(MagicSell) : 0;
 
-   PrintFormat("═══ BayesianGrid v7.00 HF ═══");
+   PrintFormat("═══ BayesianGrid v7.01 HF ═══");
    PrintFormat("Sym=%s Pt=%.5f Digits=%d Spread=%d StopsLvl=%d",
                g_sym, g_point, g_digits,
                (int)SymbolInfoInteger(g_sym, SYMBOL_SPREAD),
@@ -396,12 +454,13 @@ void OnTick()
      {
       if(PosCount(MagicBuy) + PosCount(MagicSell) > 0)
         {
-         int fails = CloseAll(MagicBuy) + CloseAll(MagicSell);
-         if(fails > 0 && DebugLog) PrintFormat("!!! HALT FLATTEN: %d position(s) still open, retrying", fails);
+         int fails = (int)MathMax(0, CloseSide(0)) + (int)MathMax(0, CloseSide(1));
+         if(fails > 0 && DebugLog) PrintFormat("!!! HALT FLATTEN: %d position(s) still open, retrying with backoff", fails);
          if(ShowPanel) Panel();
          return;
         }
       g_haltFlatten = false;
+      if(GlobalVariableCheck(GvName("haltFlatten"))) GlobalVariableDel(GvName("haltFlatten"));
       Print(">>> HALT FLATTEN complete: all EA positions closed");
      }
 
@@ -436,6 +495,8 @@ void OnTick()
       CloseAll(MagicSell);
       g_halt = true;
       g_haltFlatten = true;
+      GlobalVariableSet(GvName("haltFlatten"), 1);
+      GlobalVariablesFlush();
       g_haltUntil = (HaltCooldownMin > 0) ? (datetime)(TimeCurrent() + HaltCooldownMin * 60) : (datetime)0;
       if(PersistStats)
         {
@@ -493,7 +554,8 @@ void OnTick()
            {
             PrintFormat(">>> PRE-NEWS CLOSE %s grid (float=$%.2f) before %s",
                         mags[k] == MagicBuy ? "BUY" : "SELL", FloatPnL(mags[k]), g_newsNextName);
-            CloseAll(mags[k]);
+            LatchSide(k);   // finish the close even if the remainder turns negative
+            CloseSide(k);
            }
         }
      }
@@ -512,15 +574,16 @@ void OnTick()
    static int s_prevSellCount = -1;
 
    // -1 = first tick after (re)load: keep the start time OnInit recovered from the open positions
-   if(s_prevBuyCount == 0 && bCount > 0)  g_buyGridStart  = TimeCurrent();
-   if(s_prevSellCount == 0 && sCount > 0) g_sellGridStart = TimeCurrent();
+   if(s_prevBuyCount == 0 && bCount > 0)  g_buyGridStart  = OldestOpenTime(MagicBuy);
+   if(s_prevSellCount == 0 && sCount > 0) g_sellGridStart = OldestOpenTime(MagicSell);
    if(s_prevBuyCount < 0 && bCount > 0 && g_buyGridStart == 0)   g_buyGridStart  = OldestOpenTime(MagicBuy);
    if(s_prevSellCount < 0 && sCount > 0 && g_sellGridStart == 0) g_sellGridStart = OldestOpenTime(MagicSell);
 
    //--- Detect grid closed by TP ---
    if(s_prevBuyCount > 0 && bCount == 0)
      {
-      double pnl = RecentPnL(MagicBuy, g_buyGridStart);
+      double pnl = RecentPnL(MagicBuy, (datetime)MathMax((long)g_buyGridStart - 60, (long)g_lastClose[0] + 1));
+      g_lastClose[0] = TimeCurrent();
       if(pnl > 0) g_wins++; else g_losses++;
       g_sessionPnL += pnl;
       PrintFormat(">>> BUY GRID CLOSED: P/L=$%.2f (was %d layers)", pnl, s_prevBuyCount);
@@ -528,7 +591,8 @@ void OnTick()
      }
    if(s_prevSellCount > 0 && sCount == 0)
      {
-      double pnl = RecentPnL(MagicSell, g_sellGridStart);
+      double pnl = RecentPnL(MagicSell, (datetime)MathMax((long)g_sellGridStart - 60, (long)g_lastClose[1] + 1));
+      g_lastClose[1] = TimeCurrent();
       if(pnl > 0) g_wins++; else g_losses++;
       g_sessionPnL += pnl;
       PrintFormat(">>> SELL GRID CLOSED: P/L=$%.2f (was %d layers)", pnl, s_prevSellCount);
@@ -542,19 +606,17 @@ void OnTick()
    if(TimeCurrent() - s_lastHeal >= 60)
      {
       s_lastHeal = TimeCurrent();
-      HealTP(ORDER_TYPE_BUY,  MagicBuy,  bWavg, bCount);
-      HealTP(ORDER_TYPE_SELL, MagicSell, sWavg, sCount);
-      EnsureSL(ORDER_TYPE_BUY,  MagicBuy);
-      EnsureSL(ORDER_TYPE_SELL, MagicSell);
+      if(!g_sideFlat[0]) { HealTP(ORDER_TYPE_BUY,  MagicBuy,  bWavg, bCount); EnsureSL(ORDER_TYPE_BUY,  MagicBuy); }
+      if(!g_sideFlat[1]) { HealTP(ORDER_TYPE_SELL, MagicSell, sWavg, sCount); EnsureSL(ORDER_TYPE_SELL, MagicSell); }
      }
 
    //--- Active grids: add layers (NEVER gated by time/halt — must reach TP) ---
    //    Optional exception: NewsPauseLayers holds adds inside a news window.
    bool layersOK = !(g_newsBlock && NewsPauseLayers);
-   if(bCount > 0 && layersOK)
+   if(bCount > 0 && layersOK && !g_sideFlat[0])
       TryAddLayer(ORDER_TYPE_BUY, MagicBuy, bWavg, bLastPx, bLots, bCount);
 
-   if(sCount > 0 && layersOK)
+   if(sCount > 0 && layersOK && !g_sideFlat[1])
       TryAddLayer(ORDER_TYPE_SELL, MagicSell, sWavg, sLastPx, sLots, sCount);
 
    //--- Idle grids: open new ones (gated) ---
@@ -610,10 +672,16 @@ void OnTick()
            }
          else
            {
-            if(bCount == 0 && wantBuy && OpenLayer1(ORDER_TYPE_BUY, MagicBuy))
+            if(bCount == 0 && wantBuy && !g_sideFlat[0] && OpenLayer1(ORDER_TYPE_BUY, MagicBuy))
+              {
                g_effMaxLayers[0] = fit;
-            if(sCount == 0 && wantSell && OpenLayer1(ORDER_TYPE_SELL, MagicSell))
+               GlobalVariableSet(GvName("fitB"), fit);
+              }
+            if(sCount == 0 && wantSell && !g_sideFlat[1] && OpenLayer1(ORDER_TYPE_SELL, MagicSell))
+              {
                g_effMaxLayers[1] = fit;
+               GlobalVariableSet(GvName("fitS"), fit);
+              }
            }
          if(forceStart)
             s_startupOpened = true;
@@ -692,6 +760,14 @@ bool OpenLayer1(ENUM_ORDER_TYPE type, int magic)
       PrintFormat(">>> NEW %s GRID: fill=%.5f TP=%.5f SL=%.5f lot=%.2f",
                   type == ORDER_TYPE_BUY ? "BUY" : "SELL",
                   fill > 0 ? fill : price, tp, sl, lot);
+      int side = (type == ORDER_TYPE_BUY) ? 0 : 1;
+      long oMs, nMs;
+      double fPx;
+      if(GridTimes(magic, oMs, nMs, fPx))
+         SetAnchor(side, fPx, oMs);                           // the broker's fill and time
+      else
+         SetAnchor(side, fill > 0 ? fill : price, tick.time_msc);
+      if(StopPips > 0) EnsureSL(type, magic);                 // SL from the real fill, not the request
       return true;
      }
    return false;
@@ -727,8 +803,10 @@ void TryAddLayer(ENUM_ORDER_TYPE type, int magic,
    long oldestMs, newestMs;
    double firstPx;
    if(!GridTimes(magic, oldestMs, newestMs, firstPx)) return;
+   long ancMs;
+   SideAnchor(side, firstPx, ancMs);                          // layer-1 anchor, not the oldest survivor
    if(AddMinSec > 0 && tick.time_msc - newestMs < (long)AddMinSec * 1000) return;
-   if(NoAddAfterSec > 0 && tick.time_msc - oldestMs >= (long)NoAddAfterSec * 1000) return;
+   if(NoAddAfterSec > 0 && tick.time_msc - ancMs >= (long)NoAddAfterSec * 1000) return;
 
    int    nextLayer = count + 1;
    double lot       = LotSize(nextLayer);
@@ -774,6 +852,7 @@ void TryAddLayer(ENUM_ORDER_TYPE type, int magic,
                actualPx, lot, newWavg, newTP, newLots);
 
    SetTP(magic, newTP);
+   if(StopPips > 0) EnsureSL(type, magic);
   }
 
 //+------------------------------------------------------------------+
@@ -790,7 +869,7 @@ void SetTP(int magic, double tp)
       if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
 
       double curTP = PositionGetDouble(POSITION_TP);
-      if(MathAbs(curTP - tp) <= g_point) continue;
+      if(MathAbs(curTP - tp) < 0.5 * MathMax(g_tickSize, g_point)) continue;
 
       MqlTradeRequest  req = {};
       MqlTradeResult   res = {};
@@ -972,7 +1051,12 @@ bool SpreadOK()
 //+------------------------------------------------------------------+
 //| Helpers                                                           |
 //+------------------------------------------------------------------+
-double ND(double v) { return NormalizeDouble(v, g_digits); }
+//--- price normaliser: rounds to the symbol's tick size (tick > point on some CFDs), then digits
+double ND(double v)
+  {
+   if(g_tickSize > 0) v = MathRound(v / g_tickSize) * g_tickSize;
+   return NormalizeDouble(v, g_digits);
+  }
 
 void PersistSnapshot()
   {
@@ -1053,7 +1137,7 @@ double FloatPnL(int magic)
 double RecentPnL(int magic, datetime fromTime)
   {
    double p = 0;
-   datetime from = (fromTime > 0) ? (fromTime - 60) : (TimeCurrent() - 86400);
+   datetime from = (fromTime > 0) ? fromTime : (TimeCurrent() - 86400);  // callers pass the exact window start
    if(!HistorySelect(from, TimeCurrent() + 60)) return 0;
    for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
      {
@@ -1156,7 +1240,7 @@ void HealTP(ENUM_ORDER_TYPE type, int magic, double wavg, int count)
       tpMin = MathMin(tpMin, tp);
       tpMax = MathMax(tpMax, tp);
      }
-   if(!missing && tpMax - tpMin <= g_point) return;
+   if(!missing && tpMax - tpMin < 0.5 * MathMax(g_tickSize, g_point)) return;
 
    double tp = (type == ORDER_TYPE_BUY) ? ND(wavg + TP_Pips * 10.0 * g_point)
                                         : ND(wavg - TP_Pips * 10.0 * g_point);
@@ -1254,9 +1338,11 @@ int FitLayers(double equity)
    double budget   = (MaxBasketRiskPct > 0) ? MaxBasketRiskPct / 100.0 * equity : DBL_MAX;
    double worst    = 0;
    int    n        = 0;
+   double spr = SymbolInfoInteger(g_sym, SYMBOL_SPREAD) * g_point;
    for(int k = 1; k <= MaxLayers; k++)
      {
-      double dist = stopD - (k - 1) * step;    // this layer's fill (ask) to the stop (bid)
+      double dist = stopD - (k - 1) * (step - slip);   // layer k fill (ask) to the stop (bid), incl. add slippage
+      if(k > 1 && dist <= spr + slip) break;          // trigger not reachable before the stop
       if(dist <= 0) break;
       double lot = LotSize(k);
       double add = lot * perPrice * (dist + slip) + lot * RiskCommPerLot;
@@ -1267,86 +1353,208 @@ int FitLayers(double equity)
    return n;
   }
 
-//--- per-grid exits every tick: L1-anchored basket stop, then the holding-time stop
+//--- per-side anchor (layer-1 fill + time) and flatten latch, persisted in GlobalVariables
+string SideSfx(int k) { return (k == 0) ? "B" : "S"; }
+
+void SetAnchor(int k, double px, long ms)
+  {
+   g_anchorPx[k] = px;
+   g_anchorMs[k] = ms;
+   GlobalVariableSet(GvName("anc" + SideSfx(k) + "px"), px);
+   GlobalVariableSet(GvName("anc" + SideSfx(k) + "ms"), (double)ms);
+  }
+
+//--- the layer-1 anchor; recovered from the oldest live ticket only if it was never recorded
+void SideAnchor(int k, double &px, long &ms)
+  {
+   if(g_anchorPx[k] > 0)
+     {
+      px = g_anchorPx[k];
+      ms = g_anchorMs[k];
+      return;
+     }
+   long oMs, nMs;
+   double fPx;
+   if(GridTimes(k == 0 ? MagicBuy : MagicSell, oMs, nMs, fPx))
+     {
+      SetAnchor(k, fPx, oMs);
+      px = fPx;
+      ms = oMs;
+      return;
+     }
+   px = 0;
+   ms = 0;
+  }
+
+void LatchSide(int k)
+  {
+   if(g_sideFlat[k]) return;
+   g_sideFlat[k] = true;
+   GlobalVariableSet(GvName("flat" + SideSfx(k)), 1);
+   GlobalVariablesFlush();
+  }
+
+//--- side is flat: forget its anchor, latch and fitted ladder
+void ClearSide(int k)
+  {
+   g_anchorPx[k] = 0;
+   g_anchorMs[k] = 0;
+   g_sideFlat[k] = false;
+   g_closeBackoff[k] = 0;
+   g_nextCloseTry[k] = 0;
+   string names[4];
+   names[0] = "anc" + SideSfx(k) + "px";
+   names[1] = "anc" + SideSfx(k) + "ms";
+   names[2] = "flat" + SideSfx(k);
+   names[3] = "fit" + SideSfx(k);
+   for(int i = 0; i < 4; i++)
+      if(GlobalVariableCheck(GvName(names[i]))) GlobalVariableDel(GvName(names[i]));
+  }
+
+//--- close one side with exponential backoff (2..30 s) after failures; -1 = waiting / trading off
+int CloseSide(int k)
+  {
+   if(TimeCurrent() < g_nextCloseTry[k]) return -1;
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED)
+      || SymbolInfoInteger(g_sym, SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED)
+     {
+      g_nextCloseTry[k] = TimeCurrent() + 5;
+      return -1;
+     }
+   int f = CloseAll(k == 0 ? MagicBuy : MagicSell);
+   if(f > 0)
+     {
+      g_closeBackoff[k] = (int)MathMin(MathMax(2, g_closeBackoff[k] * 2), 30);
+      g_nextCloseTry[k] = TimeCurrent() + g_closeBackoff[k];
+     }
+   else
+      g_closeBackoff[k] = 0;
+   return f;
+  }
+
+//--- per-grid exits every tick. Once a stop or time exit fires, the side is LATCHED: it keeps
+//    closing (with backoff) and cannot re-anchor, add layers or loosen its SL until it is flat.
 void V7GridExits()
   {
-   if(StopPips <= 0 && MaxHoldSec <= 0) return;
    MqlTick tk;
    if(!SymbolInfoTick(g_sym, tk)) return;
    for(int k = 0; k < 2; k++)
      {
       int magic = (k == 0) ? MagicBuy : MagicSell;
       ENUM_ORDER_TYPE type = (k == 0) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-      long oldestMs, newestMs;
-      double firstPx;
-      if(!GridTimes(magic, oldestMs, newestMs, firstPx)) continue;
+      if(PosCount(magic) == 0)
+        {
+         if(g_sideFlat[k] || g_anchorPx[k] > 0) ClearSide(k);
+         continue;
+        }
+      if(g_sideFlat[k])
+        {
+         CloseSide(k);
+         continue;
+        }
+      if(StopPips <= 0 && MaxHoldSec <= 0) continue;
+      double ancPx;
+      long   ancMs;
+      SideAnchor(k, ancPx, ancMs);
+      if(ancPx <= 0) continue;
       if(StopPips > 0)
         {
-         double sp = StopPrice(type, firstPx);
+         double sp = StopPrice(type, ancPx);
          bool hit = (k == 0) ? (tk.bid <= sp) : (tk.ask >= sp);
          if(hit)
            {
             PrintFormat(">>> BASKET STOP %s: L1=%.5f stop=%.5f px=%.5f float=%.2f", k == 0 ? "BUY" : "SELL",
-                        firstPx, sp, k == 0 ? tk.bid : tk.ask, FloatPnL(magic));
-            CloseAll(magic);
+                        ancPx, sp, k == 0 ? tk.bid : tk.ask, FloatPnL(magic));
+            LatchSide(k);
+            CloseSide(k);
             continue;
            }
         }
-      if(MaxHoldSec > 0 && tk.time_msc - oldestMs >= (long)MaxHoldSec * 1000)
+      if(MaxHoldSec > 0 && tk.time_msc - ancMs >= (long)MaxHoldSec * 1000)
         {
          PrintFormat(">>> TIME STOP %s: age %.0fs >= %ds float=%.2f", k == 0 ? "BUY" : "SELL",
-                     (tk.time_msc - oldestMs) / 1000.0, MaxHoldSec, FloatPnL(magic));
-         CloseAll(magic);
+                     (tk.time_msc - ancMs) / 1000.0, MaxHoldSec, FloatPnL(magic));
+         LatchSide(k);
+         CloseSide(k);
         }
      }
   }
 
-//--- account guards: daily loss, peak kill latch, session-end flatten.
-//    Returns false while the EA must stay flat for the rest of this tick.
+//--- account guards: daily loss (state persisted per server day), peak kill latch, session-end
+//    flatten. Returns false while the EA must stay flat for the rest of this tick.
 bool V7AccountGuards()
   {
    double eq = GridEquity();
+   int nOpen = PosCount(MagicBuy) + PosCount(MagicSell);
    MqlDateTime dt;
    TimeToStruct(TimeCurrent(), dt);
    datetime day = TimeCurrent() - (dt.hour * 3600 + dt.min * 60 + dt.sec);
    if(day != g_dayStart)
      {
+      if(GlobalVariableCheck(GvName("dayStart")) && (datetime)(long)GlobalVariableGet(GvName("dayStart")) == day)
+        {
+         g_dayBal  = GlobalVariableGet(GvName("dayBal"));          // restart inside the same day
+         g_dayHalt = GlobalVariableGet(GvName("dayHalt")) > 0.5;
+         if(g_dayHalt) g_dayHaltDay = day;
+        }
+      else
+        {
+         g_dayBal = AccountInfoDouble(ACCOUNT_BALANCE);
+         if(!(g_dayHalt && nOpen > 0)) g_dayHalt = false;          // a still-flattening halt carries over
+         GlobalVariableSet(GvName("dayStart"), (double)(long)day);
+         GlobalVariableSet(GvName("dayBal"), g_dayBal);
+         GlobalVariableSet(GvName("dayHalt"), g_dayHalt ? 1 : 0);
+        }
       g_dayStart = day;
-      g_dayBal   = AccountInfoDouble(ACCOUNT_BALANCE);
-      g_dayHalt  = false;
      }
-   if(eq > g_eqPeak) g_eqPeak = eq;
-   int nOpen = PosCount(MagicBuy) + PosCount(MagicSell);
-
-   if(PeakKillPct > 0 && !g_kill && g_eqPeak > 0 && eq <= g_eqPeak * (1.0 - PeakKillPct / 100.0))
+   if(g_dayHalt && nOpen == 0 && g_dayHaltDay != g_dayStart)
      {
-      g_kill = true;
-      GlobalVariableSet(GvName("kill"), 1);
-      PrintFormat("!!! KILL LATCH: equity %.2f <= %.1f%% below peak %.2f. Flattening; set ResetKillLatch=true after review.",
-                  eq, PeakKillPct, g_eqPeak);
+      g_dayHalt = false;
+      GlobalVariableSet(GvName("dayHalt"), 0);
+     }
+
+   if(PeakKillPct > 0)
+     {
+      if(eq > g_eqPeak) g_eqPeak = eq;
+      if(g_eqPeak > g_savedPeak * 1.005)
+        {
+         GlobalVariableSet(GvName("eqpeak"), g_eqPeak);
+         g_savedPeak = g_eqPeak;
+        }
+      if(!g_kill && g_eqPeak > 0 && eq <= g_eqPeak * (1.0 - PeakKillPct / 100.0))
+        {
+         g_kill = true;
+         GlobalVariableSet(GvName("kill"), 1);
+         GlobalVariablesFlush();
+         PrintFormat("!!! KILL LATCH: equity %.2f <= %.1f%% below peak %.2f. Flattening; set ResetKillLatch=true after review.",
+                     eq, PeakKillPct, g_eqPeak);
+        }
      }
    if(g_kill)
      {
-      if(nOpen > 0) { CloseAll(MagicBuy); CloseAll(MagicSell); }
+      if(nOpen > 0) { CloseSide(0); CloseSide(1); }
       return false;
      }
    if(DailyLossPct > 0 && !g_dayHalt && g_dayBal > 0 && eq - g_dayBal <= -DailyLossPct / 100.0 * g_dayBal)
      {
-      g_dayHalt = true;
+      g_dayHalt    = true;
+      g_dayHaltDay = g_dayStart;
+      GlobalVariableSet(GvName("dayHalt"), 1);
+      GlobalVariablesFlush();
       PrintFormat("!!! DAILY LOSS LIMIT: equity %.2f vs day start %.2f (-%.1f%%). Flat until the next server day.",
                   eq, g_dayBal, DailyLossPct);
      }
    if(g_dayHalt && nOpen > 0)
      {
-      CloseAll(MagicBuy);              // keep flattening until flat (a failed close never keeps averaging)
-      CloseAll(MagicSell);
+      CloseSide(0);                    // keep flattening until flat (a failed close never keeps averaging)
+      CloseSide(1);
       return false;
      }
    if(CloseAtSessionEnd && !InSession() && nOpen > 0)
      {
       if(DebugLog) Print(">>> SESSION END: flattening EA grids");
-      CloseAll(MagicBuy);
-      CloseAll(MagicSell);
+      CloseSide(0);
+      CloseSide(1);
       return false;
      }
    return true;
@@ -1415,21 +1623,29 @@ int StretchSignal()
    return 0;
   }
 
-//--- make sure every ticket of a grid carries the broker-side SL (after fallbacks/rejects)
+//--- make sure every ticket of a grid carries the broker-side SL (after fallbacks/rejects).
+//    The SL comes from the persisted layer-1 anchor and is never moved further away.
 void EnsureSL(ENUM_ORDER_TYPE type, int magic)
   {
    if(StopPips <= 0) return;
-   long oldestMs, newestMs;
-   double firstPx;
-   if(!GridTimes(magic, oldestMs, newestMs, firstPx)) return;
-   double sl = BrokerSL(type, firstPx);
+   int k = (type == ORDER_TYPE_BUY) ? 0 : 1;
+   if(PosCount(magic) == 0) return;
+   double ancPx;
+   long   ancMs;
+   SideAnchor(k, ancPx, ancMs);
+   if(ancPx <= 0) return;
+   double sl  = BrokerSL(type, ancPx);
+   double tol = 0.5 * MathMax(g_tickSize, g_point);
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if(PositionGetString(POSITION_SYMBOL) != g_sym) continue;
       if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-      if(MathAbs(PositionGetDouble(POSITION_SL) - sl) <= g_point) continue;
+      double cur = PositionGetDouble(POSITION_SL);
+      if(MathAbs(cur - sl) < tol) continue;
+      if(cur > 0 && ((type == ORDER_TYPE_BUY && sl < cur - tol) || (type == ORDER_TYPE_SELL && sl > cur + tol)))
+         continue;                                            // never loosen an existing SL
       MqlTradeRequest req = {};
       MqlTradeResult  res = {};
       req.action   = TRADE_ACTION_SLTP;
@@ -1699,7 +1915,7 @@ void Panel()
    double wr = (total > 0) ? (100.0 * g_wins / total) : 0;
 
    string s = "";
-   s += "════ BayesianGrid v7.00 HF ════\n";
+   s += "════ BayesianGrid v7.01 HF ════\n";
    s += StringFormat("%s  |  %s\n", g_sym, TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES));
    s += StringFormat("Bal %.2f  Eq %.2f  AcctDD %.2f%%\n", bal, eq, acctDD);
    s += StringFormat("GridFloat $%.2f  GridDD %.2f%%/cap %.0f\n", gridFloat, gridDD, g_refCapital);
