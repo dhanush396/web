@@ -35,7 +35,8 @@ WFO_FOLDS = [(("2012-01-01", "2014-01-01"), ("2014-01-01", "2015-01-01")),
              (("2014-01-01", "2016-01-01"), ("2016-01-01", "2017-01-01"))]
 
 BASE = dict(Leverage=500.0, StopOutPct=50.0, SwapLong=-7.0, SwapShort=-1.0, RolloverSpreadMult=4.0,
-            UseSpreadProfile=1, PathPoints=3, PathSeed=11, MarginBufferMult=5.0, MaxTotalLots=0.5)
+            UseSpreadProfile=1, PathPoints=3, PathSeed=11, MarginBufferMult=5.0, MaxTotalLots=0.5,
+            MktSlip=1)  # slippage on L1 opens and market exits too, as the live EA gets it
 ACCOUNTS = {
     "std_raw": dict(BASE, Balance=100.0, SpreadPts=2.0, CommPerLotRT=7.0, SlippagePts=2.0),
     "std": dict(BASE, Balance=100.0, SpreadPts=12.0, CommPerLotRT=0.0, SlippagePts=2.0),
@@ -212,7 +213,8 @@ def main():
               f"stitched $100 -> ${100 * comp:.2f}")
     elif mode == "freeze":
         df = pd.read_csv(os.path.join(out, "is_trials.csv"))
-        alive = df[(df.ruined == 0) & (df.killed == 0)].head(int(n or 5))
+        alive = df[(df.ruined == 0) & (df.killed == 0)].drop_duplicates(
+            subset=["cagr_pct", "max_dd_pct", "wins"]).head(int(n or 5))
         frozen = {f"is_rank{i + 1}": json.loads(p) for i, p in enumerate(alive.params)}
         json.dump(frozen, open(os.path.join(out, "frozen.json"), "w"), indent=1)
         print(f"froze {len(frozen)} configs from the in-sample study -> frozen.json")

@@ -157,3 +157,35 @@ The same search under optimistic tester assumptions (no spread, commission or sl
 The +245% is entirely an artifact. A 30-second time stop on a fixed O→L→H→C bar path always exits on the bar's high or low, and no costs are charged. Remove the path artifact and even a zero-cost run is a coin flip; add real costs and it loses.
 
 **This is how MT5 "1 minute OHLC" or "Open prices" tests and zero-spread settings produce the HF-grid equity curves sold on marketplaces.** Always judge an HF EA in the MT5 tester with *"Every tick based on real ticks"*, your broker's spread and commission, and *Random delay*.
+
+## 6. Adversarial code review of v7 (workflow `review-v7-hf-grid`, 7 agents)
+
+There is no MetaEditor in this environment. So four independent reviewers each read the code through one lens, and a skeptic per lens then tried to refute every finding:
+
+1. MQL5 compile correctness
+2. Live-trading logic
+3. Simulator correctness
+4. EA-vs-simulator parity
+
+Results:
+
+- **0 compile errors** in the 1,745-line EA. MetaEditor is still the final word.
+- **34 findings, 33 confirmed, 1 uncertain.** All are fixed in EA v7.01 and the simulator; 20 tests pass, and the v6.13 presets reproduce.
+
+Fixes that matter most for live money:
+
+- **Partly failed stops.** If a basket or time stop only partly closed, the stop re-anchored to the surviving layer, the grid kept averaging, and `EnsureSL` loosened the broker SL. Each side now has a persisted layer-1 anchor and a flatten latch, and an SL is never moved further away.
+- **Netting accounts.** The EA now refuses to run on a netting account, where the two grids would merge into one position.
+- **Restarts.** The daily-loss state and the equity peak are persisted, so a restart no longer forgets a daily stop.
+- **Close retries.** Closes back off for 2–30 s, and prices round to tick size, which matters for gold and indices.
+- **Broker SL.** It is set right after each fill, from the actual fill price.
+
+Fixes that matter for the backtest numbers:
+
+- **Kill/daily limits.** They are solved at the exact crossing, and also fire on losses realised while flat.
+- **Spread changes.** Stops and TPs crossed by a spread change are detected.
+- **Hold deadline.** It is an event inside each price leg, so no TP is credited after `MaxHoldSec`.
+- **Slippage.** It is charged on layer-1 opens and market exits (`MktSlip`).
+- **Presets.** `.set` files now carry every v7 input, plus the optimiser's commission and slippage for the ladder fit.
+
+The full findings and verdicts are in `research/results/hf_research/review_v7.json`.

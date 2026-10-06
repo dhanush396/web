@@ -1,5 +1,7 @@
 # BayesianGrid EA v6.13: can it run live on $100?
 
+> **Update (v7.01):** the high-frequency grid version is studied in [`HF_GRID_RESEARCH.md`](HF_GRID_RESEARCH.md): research, the Step 0 edge test, the v7 build, its backtests and the adversarial code review. The EA file is now v7.01. Every v7 input defaults to off, so the v6.13 presets below behave exactly as described.
+
 A quantitative study of `BayesianGrid_EA_v6_PROD.mq5`: what it takes to run it on a $100 account, with a news filter added and the parameters fitted by a grid search and a Bayesian (TPE) search. Everything here can be reproduced from `research/`.
 
 ## Verdict
@@ -178,7 +180,7 @@ All existing inputs keep their meaning and defaults.
 3. **Validate the data this study could not cover:**
    - Strategy Tester, "Every tick based on real ticks", **2020-06 → today**, with your broker's spreads and swaps.
    - The 2022 move to parity was a 2014-style trend, so expect basket stops there.
-   - Optionally, use `presets/BG_optimize_ranges.set` with the genetic optimiser. Judge the result by its walk-forward behaviour, not its best pass.
+   - Optionally, use `presets/BG_HF_optimize_ranges.set` (v7 ranges) with the genetic optimiser. Judge the result by its walk-forward behaviour, not its best pass.
 4. **Demo forward test:** at least 4 weeks. Check that journal fills, TPs and news blocks match expectations.
 5. **Live kill rules** (decide them now, not during a drawdown):
    - Stop if equity falls below **$60** (‑40%).
