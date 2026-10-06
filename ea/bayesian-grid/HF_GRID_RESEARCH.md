@@ -189,3 +189,39 @@ Fixes that matter for the backtest numbers:
 - **Presets.** `.set` files now carry every v7 input, plus the optimiser's commission and slippage for the ladder fit.
 
 The full findings and verdicts are in `research/results/hf_research/review_v7.json`.
+
+## 7. The direct answer: grid size and TP for your algo in HF mode
+
+The setup is your production logic: BUY+SELL together, layers at the grid size, TP from the live weighted average, start 0.01 and +0.01 per layer, up to 5 layers, no stop. The only HF changes are M1 entries, a 5-minute hold limit and the news filter. Data: EURUSD 2012–2016, $100. Files: `research/results/hf_std_raw/sweep_spacing_tp.csv` and `sweep_cost_breakeven.csv`.
+
+**Return %/yr with zero trading cost** (rows = grid size, columns = TP):
+
+| Grid \ TP | 1 pip | 2 pips | 3 pips | 5 pips | 8 pips | 12 pips |
+|---|---|---|---|---|---|---|
+| 2 pips (20 pts) | **+295** | +288 | +255 | −40 | −38 | −48 |
+| 3 pips (30 pts) | +250 | +276 | +240 | −43 | −41 | −49 |
+| 5 pips (50 pts) | +170 | +203 | +209 | +166 | −42 | −37 |
+| 7.5 pips (75 pts) | −41 | +133 | +149 | +154 | −37 | −43 |
+| 10 pips (100 pts) | −49 | −48 | −40 | +118 | +101 | +89 |
+| 15 pips (150 pts) | −49 | −38 | −37 | −38 | +81 | +68 |
+
+**With real raw-ECN costs, all 36 cells lose 36–50%/yr with 90–98% drawdown,** i.e. the account is wiped.
+
+**Break-even cost** (spread + commission + slippage scaled together; return %/yr):
+
+| Cell | 0 pips round trip | 0.13 | 0.26 | 0.45 | 0.65 | 1.30 (raw ECN) |
+|---|---|---|---|---|---|---|
+| Grid 2 / TP 1 | +295 | **+232** | −42 | −38 | −38 | −41 |
+| Grid 5 / TP 3 | +209 | **+146** | −38 | −37 | −38 | −39 |
+| Grid 2 / TP 2 | +288 | −38 | −40 | −37 | −37 | −37 |
+| Grid 3 / TP 2 | +276 | −38 | −40 | −37 | −41 | −38 |
+| Grid 7.5 / TP 5 | +154 | −38 | −49 | −40 | −37 | −50 |
+
+**So the best grid size and TP on EURUSD are 2 pips / 1 pip, or 5 pips / 3 pips.** They only work if the *all-in* round trip is about **0.13 pip or less**.
+
+- By ~0.26 pip, every cell blows the account.
+- The cheapest retail raw accounts are ~0.6–1.3 pip round trip, about 5–10× the break-even.
+- Even at zero cost, drawdowns are 45–55%.
+- The zero-cost profits depend on the simulated sub-minute price path, so treat them as an upper bound.
+
+This is exactly why institutional HF grids work and retail ones don't: they are *paid* the spread (maker rebates), so their cost is negative.
