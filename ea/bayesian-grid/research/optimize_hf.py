@@ -40,6 +40,9 @@ ACCOUNTS = {
     "std_raw": dict(BASE, Balance=100.0, SpreadPts=2.0, CommPerLotRT=7.0, SlippagePts=2.0),
     "std": dict(BASE, Balance=100.0, SpreadPts=12.0, CommPerLotRT=0.0, SlippagePts=2.0),
     "cent_raw": dict(BASE, Balance=10000.0, SpreadPts=2.0, CommPerLotRT=7.0, SlippagePts=2.0, MaxTotalLots=50.0),
+    # "what an optimistic tester shows": no spread, commission or slippage, 4-point OHLC bars
+    "std_zero": dict(BASE, Balance=100.0, SpreadPts=0.0, CommPerLotRT=0.0, SlippagePts=0.0, UseSpreadProfile=0,
+                     RolloverSpreadMult=1.0, PathPoints=0),
 }
 ACCOUNT = os.environ.get("BG_HF_ACCOUNT", "std_raw")
 ACC = ACCOUNTS[ACCOUNT]
