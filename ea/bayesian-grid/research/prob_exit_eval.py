@@ -5,7 +5,8 @@ Usage: python prob_exit_eval.py <eurusd_m1.npz> <coefficients.json> <out_dir>
 Every variant uses your HF production logic (M1 entries, 0.01 +0.01 ladder, news filter, entries
 01:00-23:00) with NO holding-period exit, except the "time stop" reference row:
   tp_stop        : exit only at TP or at the L1-anchored stop (no early exit)
-  floor_rw_X     : + exit when the random-walk P(TP first) = v/(u+v) < X (zero coefficients)
+  floor_rw_X     : + exit when the random-walk P(TP first) = bgrid_bt._p_rw (gambler's ruin including the
+                   grid's own future adds) < X (zero coefficients)
   floor_model_X  : + exit when the fitted model's P(TP first) < X
   edge_model_X   : + exit when the model's odds are below the random walk's by X logits
   time_300s      : the previous v7 setup (5-minute hold, session-end close) for reference

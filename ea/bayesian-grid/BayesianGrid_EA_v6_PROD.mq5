@@ -1697,7 +1697,7 @@ double ProbRandomWalk(int k, ENUM_ORDER_TYPE type, int magic, double bid, double
       n++;
       double w = pv / lots;
       tp = buy ? ND(w + tpd) : ND(w - tpd);                    // TryAddLayer: ND(newWavg +/- TP_Pips x 10 x point)
-      x  = a;
+      x  = buy ? MathMin(x, a) : MathMax(x, a);   // an add already due (but gated) starts from the current price
      }
    return res;
   }

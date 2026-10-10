@@ -1,6 +1,6 @@
 # BayesianGrid EA v6.13: can it run live on $100?
 
-> **Update (v7.02):** the high-frequency grid version is studied in [`HF_GRID_RESEARCH.md`](HF_GRID_RESEARCH.md): research, the Step 0 edge test, the v7 build, its backtests and the adversarial code review. Section 9 covers the probability view. Section 10 covers v7.02, which has no holding period: a grid exits at its TP, or only when its probability of reaching TP is down. The EA file is now v7.02. Every v7 input defaults to off, so the v6.13 presets below behave exactly as described.
+> **Update (v7.02):** the high-frequency grid version is studied in [`HF_GRID_RESEARCH.md`](HF_GRID_RESEARCH.md): research, the Step 0 edge test, the v7 build, its backtests and the adversarial code review. Section 9 covers the probability view. Section 10 covers v7.02, which has no holding period: a grid exits at its TP, at the probability exit when its probability of reaching TP is down, or at its layer-1 stop. The EA file is now v7.02. Every v7 input defaults to off, so the v6.13 presets below behave exactly as described.
 
 A quantitative study of `BayesianGrid_EA_v6_PROD.mq5`: what it takes to run it on a $100 account, with a news filter added and the parameters fitted by a grid search and a Bayesian (TPE) search. Everything here can be reproduced from `research/`.
 

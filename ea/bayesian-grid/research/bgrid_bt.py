@@ -675,7 +675,7 @@ def _p_rw(S, sd, m, hs, p):
         n += 1
         w = pv / lots
         tp = np.round(((w + tpd) if sd == 0 else (w - tpd)) / point) * point
-        x = a
+        x = min(x, a) if sd == 0 else max(x, a)  # an add already due (but gated) starts from the current price
     return res
 
 

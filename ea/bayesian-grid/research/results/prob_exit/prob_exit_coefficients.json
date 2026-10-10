@@ -1,10 +1,10 @@
 {
- "ProbB0": 0.0345,
- "ProbBZ": 0.0847,
- "ProbBTrend": 0.0286,
- "ProbBVol": -0.0017,
+ "ProbB0": 0.0357,
+ "ProbBZ": 0.0856,
+ "ProbBTrend": 0.0289,
+ "ProbBVol": -0.0007,
  "ProbBAge": -0.0065,
- "ProbBLayers": 0.0052,
+ "ProbBLayers": 0.0047,
  "ZEmaBars": 90,
  "ProbVolLongBars": 1440
 }

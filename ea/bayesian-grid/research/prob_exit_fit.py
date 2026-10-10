@@ -98,7 +98,7 @@ def fit_logit(X, off, y, cl, iters=30):
     p = 1 / (1 + np.exp(-eta))
     H = (X * (p * (1 - p))[:, None]).T @ X
     Hi = np.linalg.inv(H)
-    # cluster-robust (sandwich) covariance, clusters = baskets
+    # cluster-robust (sandwich) covariance, clusters = trading days (pooled across configs and sides)
     u, inv = np.unique(cl, return_inverse=True)
     sc = np.zeros((len(u), X.shape[1]))
     np.add.at(sc, inv, X * (y - p)[:, None])
