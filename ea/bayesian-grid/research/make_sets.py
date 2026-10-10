@@ -26,13 +26,14 @@ ENUM_VALUES = {
     "PERIOD_M1": 1, "PERIOD_M5": 5, "PERIOD_M15": 15, "PERIOD_M30": 30, "PERIOD_H1": 16385,
     "ENTRY_SYMMETRIC": 0, "ENTRY_STRETCH": 1, "NEWS_IMP_HIGH": 3, "NEWS_IMP_MEDIUM": 2,
     "NEWS_CLOSE_NONE": 0, "NEWS_CLOSE_PROFIT": 1, "NEWS_CLOSE_ALL": 2,
+    "PROB_OFF": 0, "PROB_FLOOR": 1, "PROB_EDGE": 2, "PROB_BOTH": 3,
 }
 TF_FROM_MIN = {1: 1, 5: 5, 15: 15, 30: 30, 60: 16385}
 SIM_ONLY = {"LotSchedule", "Session", "Ladder", "SpreadScale", "MktSlip", "PathPoints", "PathSeed",
             "UseSpreadProfile", "Balance", "Leverage", "StopOutPct", "ContractSize", "CommPerLotRT", "SwapLong",
             "SwapShort", "SlippagePts", "SpreadPts", "RolloverSpreadMult", "VolMin", "VolStep", "HedgeMarginSum",
             "Point", "EntryTFMin", "SessStartMin", "SessEndMin", "SessCloseAtEnd", "NewsFilter", "Hours",
-            "MaxHoldMin"}
+            "MaxHoldMin", "ProbRecord"}
 
 # ranges for the MT5 genetic optimiser: name -> (start, step, stop)
 OPT_RANGES = {

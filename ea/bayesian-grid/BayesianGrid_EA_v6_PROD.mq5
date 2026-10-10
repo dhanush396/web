@@ -62,9 +62,23 @@
 //|   averages; EnsureSL never loosens; hedging-account check;       |
 //|   daily-loss state and equity peak persisted; close backoff;     |
 //|   prices rounded to tick size; SL set right after each fill.     |
+//|  v7.02 PROBABILITY EXIT (ProbExitMode, OFF by default) replaces  |
+//|   the holding-period exit (keep MaxHoldSec = 0). On the first    |
+//|   tick of each M1 bar a grid estimates P(TP before basket stop): |
+//|   L = logit(Pf) + B0 + BZ*zs + BTrend*ts + BVol*ln(s1/sL)        |
+//|       + BAge*ln(1+age min) + BLayers*(layers-1); P = 1/(1+e^-L)  |
+//|   Pf = random-walk P(shared TP before the basket stop) INCLUDING |
+//|   the grid's own future adds: each add trigger re-sets the TP    |
+//|   from the new average until the ladder (fitted depth,           |
+//|   MaxTotalLots) is full, then the stop is the far barrier        |
+//|   (ProbRandomWalk = simulator _p_rw). Features from closed M1    |
+//|   bars, EWMA variances normalised like pandas ewm(adjust=True).  |
+//|   FLOOR exits if P < ProbMin, EDGE if L - logit(Pf) < -ProbEdge, |
+//|   BOTH on either. Otherwise TP or stop. Needs 'Max bars in       |
+//|   chart' >= max(1200, 6 x ProbVolLongBars) + 2 M1 bars.          |
 //+------------------------------------------------------------------+
-#property copyright   "Jeckov Kanani — Bayesian Grid v7.01 (HF)"
-#property version     "7.01"
+#property copyright   "Jeckov Kanani — Bayesian Grid v7.02 (HF)"
+#property version     "7.02"
 #property strict
 #property tester_file "BG_news_calendar.csv"
 
@@ -86,6 +100,8 @@ enum ENUM_ENTRY_MODE
    ENTRY_SYMMETRIC = 0,   // Open BUY and SELL grids together (v6)
    ENTRY_STRETCH   = 1    // Open only the reversion side after a stretch + reclaim
   };
+
+enum ENUM_PROB_EXIT { PROB_OFF = 0, PROB_FLOOR = 1, PROB_EDGE = 2, PROB_BOTH = 3 };
 
 input group           "══════ Grid Parameters ══════"
 input double          BaseLot              = 0.08;     // Base lot (layers 1-5)
@@ -129,6 +145,18 @@ input bool            ResetKillLatch       = false;    // Clear a persisted kill
 input string          SessionStart         = "";       // Server time HH:MM; new grids only inside the session ("" = off)
 input string          SessionEnd           = "";       // Server time HH:MM (may wrap midnight)
 input bool            CloseAtSessionEnd    = false;    // Flatten EA grids outside the session
+
+input group           "══════ v7.02 Probability Exit ══════"
+input ENUM_PROB_EXIT  ProbExitMode         = PROB_OFF; // Exit a grid early only when P(TP before its stop) is down
+input double          ProbMin              = 0.30;     // FLOOR: exit when P(TP first) < this
+input double          ProbEdge             = 0.0;      // EDGE: exit when logit(P) - logit(P_fair) < -this (odds worse than a random walk)
+input double          ProbB0               = 0.0;      // Model intercept (logit units)
+input double          ProbBZ               = 0.0;      // Coef: stretch in favour of the grid (zs)
+input double          ProbBTrend           = 0.0;      // Coef: 60-bar trend t-stat in favour of the grid (ts)
+input double          ProbBVol             = 0.0;      // Coef: ln(sigma1 / sigmaLong)
+input double          ProbBAge             = 0.0;      // Coef: ln(1 + basket age in minutes)
+input double          ProbBLayers          = 0.0;      // Coef: open layers - 1
+input int             ProbVolLongBars      = 1440;     // Half-life (M1 bars) of the long-run volatility
 
 input group           "══════ News Filter ══════"
 input bool            UseNewsFilter        = true;     // Block NEW grids around high-impact news
@@ -209,6 +237,14 @@ datetime g_dayHaltDay   = 0;      // server day on which the daily limit fired
 double   g_savedPeak    = 0;      // last persisted equity peak
 double   g_tickSize     = 0;
 
+//--- v7.02 probability-exit state
+datetime g_probLastBar  = 0;      // M1 bar on whose first tick the probability exit last ran
+datetime g_probFeatBar  = 0;      // M1 bar the cached features belong to (0 = none)
+double   g_probZ        = 0;      // cached features (closed M1 bars)
+double   g_probTrend    = 0;
+double   g_probLVol     = 0;
+bool     g_probFeatWarned = false; // "features unavailable" warning already printed this run
+
 //+------------------------------------------------------------------+
 //| GlobalVariable name helper (per symbol + magic set)               |
 //+------------------------------------------------------------------+
@@ -264,6 +300,15 @@ int OnInit()
       || (EntryMode == ENTRY_STRETCH && (ZEntry <= 0 || ZEmaBars < 2 || TrendTMax <= 0)))
      {
       Print("FATAL: invalid v7 HF inputs (negative values or STRETCH settings). Aborting.");
+      return INIT_PARAMETERS_INCORRECT;
+     }
+   if(ProbExitMode != PROB_OFF
+      && (StopPips <= 0 || ProbMin < 0 || ProbMin >= 1 || ProbEdge < 0 || ProbVolLongBars < 60 || ZEmaBars < 2))
+     {
+      PrintFormat("FATAL: ProbExitMode=%s needs StopPips > 0 (the basket stop is the loss barrier of P), "
+                  "ProbMin in [0,1), ProbEdge >= 0, ProbVolLongBars >= 60 and ZEmaBars >= 2 "
+                  "(got StopPips=%.1f ProbMin=%.3f ProbEdge=%.3f ProbVolLongBars=%d ZEmaBars=%d). Aborting.",
+                  EnumToString(ProbExitMode), StopPips, ProbMin, ProbEdge, ProbVolLongBars, ZEmaBars);
       return INIT_PARAMETERS_INCORRECT;
      }
    g_sessStart = ParseHHMM(SessionStart);
@@ -387,7 +432,7 @@ int OnInit()
    g_buyGridStart  = (bc > 0) ? OldestOpenTime(MagicBuy)  : 0;
    g_sellGridStart = (sc > 0) ? OldestOpenTime(MagicSell) : 0;
 
-   PrintFormat("═══ BayesianGrid v7.01 HF ═══");
+   PrintFormat("═══ BayesianGrid v7.02 HF ═══");
    PrintFormat("Sym=%s Pt=%.5f Digits=%d Spread=%d StopsLvl=%d",
                g_sym, g_point, g_digits,
                (int)SymbolInfoInteger(g_sym, SYMBOL_SPREAD),
@@ -411,10 +456,25 @@ int OnInit()
                HoursInGMT ? "Y" : "N", ServerGMTOffset,
                BlockFriday ? "Y" : "N", CloseOnFriday ? "Y" : "N", FridayCloseHour);
    PrintFormat("v7: EntryTF=%s Mode=%s Hold=%ds NoAdd=%ds AddMin=%ds Stop=%.1fp(+%.1f broker) Budget=%.1f%% "
-               "Day=%.1f%% Kill=%.1f%%%s Session=%s-%s%s",
+               "Day=%.1f%% Kill=%.1f%%%s Session=%s-%s%s ProbExit=%s Pmin=%.3f Edge=%.3f",
                EnumToString(EntryTF), EntryMode == ENTRY_STRETCH ? "STRETCH" : "SYMMETRIC", MaxHoldSec,
                NoAddAfterSec, AddMinSec, StopPips, BrokerSLBufferPips, MaxBasketRiskPct, DailyLossPct, PeakKillPct,
-               g_kill ? " (LATCHED)" : "", SessionStart, SessionEnd, CloseAtSessionEnd ? " close@end" : "");
+               g_kill ? " (LATCHED)" : "", SessionStart, SessionEnd, CloseAtSessionEnd ? " close@end" : "",
+               EnumToString(ProbExitMode), ProbMin, ProbEdge);
+   g_probFeatWarned = false;
+   if(ProbExitMode != PROB_OFF)
+     {
+      PrintFormat("v7.02 prob model: B0=%.4f BZ=%.4f BTrend=%.4f BVol=%.4f BAge=%.4f BLayers=%.4f VolLong=%d bars EMA=%d",
+                  ProbB0, ProbBZ, ProbBTrend, ProbBVol, ProbBAge, ProbBLayers, ProbVolLongBars, ZEmaBars);
+      //--- ProbFeatures() copies max(1200, 6 x ProbVolLongBars) CLOSED M1 bars: the chart must hold them
+      int probNeed = (int)MathMax(1200, 6 * ProbVolLongBars);
+      int maxBars  = (int)TerminalInfoInteger(TERMINAL_MAXBARS);
+      if(maxBars < probNeed + 2)
+         PrintFormat("!!! WARNING: ProbExitMode=%s needs %d M1 bars (max(1200, 6 x ProbVolLongBars=%d) closed bars + 2) "
+                     "but 'Max bars in chart' is %d: the probability exit will stay INACTIVE until "
+                     "Tools > Options > Charts > 'Max bars in chart' is raised to at least %d.",
+                     EnumToString(ProbExitMode), probNeed + 2, ProbVolLongBars, maxBars, probNeed + 2);
+     }
    if(StopPips > 0)
       PrintFormat("v7: ladder fit at equity %.2f -> %d of %d layers", GridEquity(), FitLayers(GridEquity()), MaxLayers);
    PrintFormat("Recovery: BUY=%d positions, SELL=%d positions. Halt=%s",
@@ -521,7 +581,7 @@ void OnTick()
         }
      }
 
-   //--- v7: per-grid basket stop + holding-time stop, then account guards ---
+   //--- v7: per-grid basket stop + holding-time stop + v7.02 probability exit, then account guards ---
    V7GridExits();
    if(!V7AccountGuards())
      {
@@ -1432,12 +1492,17 @@ int CloseSide(int k)
    return f;
   }
 
-//--- per-grid exits every tick. Once a stop or time exit fires, the side is LATCHED: it keeps
-//    closing (with backoff) and cannot re-anchor, add layers or loosen its SL until it is flat.
+//--- per-grid exits every tick. Once a stop, time or probability exit fires, the side is LATCHED: it
+//    keeps closing (with backoff) and cannot re-anchor, add layers or loosen its SL until it is flat.
+//    v7.02: the probability exit runs only on the first tick of each new M1 bar, after the stops.
 void V7GridExits()
   {
    MqlTick tk;
    if(!SymbolInfoTick(g_sym, tk)) return;
+   datetime m1Bar    = (ProbExitMode != PROB_OFF) ? iTime(g_sym, PERIOD_M1, 0) : (datetime)0;
+   bool     probBar  = (m1Bar > 0 && m1Bar != g_probLastBar);
+   int      probFeat = -1;                       // features this bar: -1 = not computed, 0 = unavailable, 1 = ok
+   double   pz = 0, ptr = 0, plv = 0;
    for(int k = 0; k < 2; k++)
      {
       int magic = (k == 0) ? MagicBuy : MagicSell;
@@ -1476,8 +1541,201 @@ void V7GridExits()
                      (tk.time_msc - ancMs) / 1000.0, MaxHoldSec, FloatPnL(magic));
          LatchSide(k);
          CloseSide(k);
+         continue;
+        }
+      if(probBar)
+        {
+         if(probFeat < 0)                        // once per bar, shared by both sides
+           {
+            probFeat = ProbFeatures(pz, ptr, plv) ? 1 : 0;
+            if(probFeat == 0 && !g_probFeatWarned)      // once per run, regardless of DebugLog
+              {
+               g_probFeatWarned = true;
+               PrintFormat("!!! WARNING: probability exit INACTIVE: M1 features unavailable (fewer than %d closed M1 bars "
+                           "available: %d bars, 'Max bars in chart' %d; or zero volatility) -> no probability exit "
+                           "until enough M1 history is loaded. (Printed once per run.)",
+                           (int)MathMax(1200, 6 * ProbVolLongBars), Bars(g_sym, PERIOD_M1),
+                           (int)TerminalInfoInteger(TERMINAL_MAXBARS));
+              }
+            if(probFeat == 0 && DebugLog)
+               Print("  PROB EXIT: M1 features unavailable (short history or zero volatility) -> no probability exit this bar");
+           }
+         if(probFeat == 1)
+            ProbExitSide(k, type, magic, ancPx, ancMs, tk.bid, tk.ask, tk.time_msc, pz, ptr, plv);
         }
      }
+   if(probBar) g_probLastBar = m1Bar;
+  }
+
+//--- the grid's shared TP: POSITION_TP of its first position that carries one (0 = none)
+double GridTP(int magic)
+  {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong t = PositionGetTicket(i);
+      if(t == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != g_sym) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      double tp = PositionGetDouble(POSITION_TP);
+      if(tp > 0) return tp;
+     }
+   return 0;
+  }
+
+//--- v7.02 probability-exit features on CLOSED M1 bars (StretchSignal conventions), cached per M1 bar:
+//    z     = (close - EMA(ZEmaBars)) / (sigma1 x sqrt15)     sigma1 = EWMA std of M1 changes, half-life 60
+//    trend = (close - close[60]) / (sigma1 x sqrt60)          SIGNED (StretchSignal uses |.|)
+//    lvol  = ln(sigma1 / sigmaLong)                           sigmaLong = same EWMA, half-life ProbVolLongBars
+//    Both EWMA variances use the pandas adjust=True normalisation over the copied window (no seed).
+//    false = not enough M1 history or zero volatility.
+bool ProbFeatures(double &z, double &trend, double &lvol)
+  {
+   datetime bar = iTime(g_sym, PERIOD_M1, 0);
+   if(bar > 0 && bar == g_probFeatBar)
+     {
+      z     = g_probZ;
+      trend = g_probTrend;
+      lvol  = g_probLVol;
+      return true;
+     }
+   z = 0; trend = 0; lvol = 0;
+   int need = (int)MathMax(1200, 6 * ProbVolLongBars);
+   double c[];
+   ArraySetAsSeries(c, true);
+   if(CopyClose(g_sym, PERIOD_M1, 1, need, c) < need) return false;   // c[0] = last CLOSED bar
+   double pip  = 10.0 * g_point;
+   double a1   = 1.0 - MathPow(0.5, 1.0 / 60.0);
+   double aL   = 1.0 - MathPow(0.5, 1.0 / (double)ProbVolLongBars);
+   //--- pandas ewm(halflife, adjust=True) over the window: var = sum w_i r_i^2 / sum w_i, w_i = (1-a)^age
+   double num1 = 0, den1 = 0, numL = 0, denL = 0;
+   for(int i = need - 2; i >= 0; i--)                        // oldest -> newest
+     {
+      double r  = (c[i] - c[i + 1]) / pip;
+      double r2 = r * r;
+      num1 = (1.0 - a1) * num1 + r2;
+      den1 = (1.0 - a1) * den1 + 1.0;
+      numL = (1.0 - aL) * numL + r2;
+      denL = (1.0 - aL) * denL + 1.0;
+     }
+   double var1 = (den1 > 0) ? num1 / den1 : 0.0;
+   double varL = (denL > 0) ? numL / denL : 0.0;
+   double sig1 = MathSqrt(var1);
+   double sigL = MathSqrt(varL);
+   if(sig1 <= 0 || sigL <= 0) return false;
+   double alpha = 2.0 / (ZEmaBars + 1.0);
+   double ema   = c[need - 1];
+   for(int i = need - 2; i >= 0; i--)
+      ema = alpha * c[i] + (1.0 - alpha) * ema;
+   z     = (c[0] - ema) / pip / (sig1 * MathSqrt(15.0));
+   trend = (c[0] - c[60]) / pip / (sig1 * MathSqrt(60.0));
+   lvol  = MathLog(sig1 / sigL);
+   g_probZ       = z;
+   g_probTrend   = trend;
+   g_probLVol    = lvol;
+   g_probFeatBar = bar;
+   return true;
+  }
+
+//--- v7.02: random-walk P(the shared TP is reached before the basket stop) INCLUDING the grid's own
+//    future adds; mirrors research/bgrid_bt.py _p_rw. BUY: between the TP (above) and the next add
+//    trigger A (below) a driftless bid hits the TP first with probability (x-A)/(TP-A); reaching A
+//    adds the next layer (fill = trigger + RiskSlipPts slippage), which re-sets the TP from the new
+//    average (the add path's ND(wavg + TP)), and so on until the ladder is full (fitted depth as in
+//    TryAddLayer, MaxTotalLots on both grids), after which the basket stop is the lower barrier.
+//    SELL is the mirror image (ask, TP below, adds and stop above). The spread is held at its
+//    current value; TryAddLayer's spread / pacing / news gates and ClampTP are not modelled (as in
+//    the simulator). Returns -1 when the grid cannot be read.
+double ProbRandomWalk(int k, ENUM_ORDER_TYPE type, int magic, double bid, double ask, double barrier, double tp)
+  {
+   double wavg = 0, last = 0, lots = 0;
+   int    n = 0;
+   ReadGrid(magic, wavg, last, lots, n);                     // last = TryAddLayer's lastPx (newest position)
+   if(n <= 0 || lots <= 0 || last <= 0) return -1.0;
+   bool   buy   = (type == ORDER_TYPE_BUY);
+   int    side  = buy ? 0 : 1;                                // == k
+   double pv    = wavg * lots;                                // sum(price_open x volume)
+   double other = TotalLots() - lots;                         // the opposite grid's lots (TryAddLayer's cap)
+   int    effml = (g_effMaxLayers[side] > 0) ? (int)MathMin(g_effMaxLayers[side], MaxLayers) : MaxLayers;
+   double hs    = (ask - bid) / 2.0;
+   double step  = GridSpacingPts * g_point;
+   double slip  = RiskSlipPts * g_point;
+   double tpd   = TP_Pips * 10.0 * g_point;
+   double x     = buy ? bid : ask;
+   double res   = 0.0;
+   double reach = 1.0;
+   for(int it = 0; it < 64; it++)
+     {
+      if((buy && x >= tp) || (!buy && x <= tp))
+        {
+         res += reach;
+         break;
+        }
+      double lot    = LotSize(n + 1);
+      bool   canAdd = (n < effml && other + lots + lot <= MaxTotalLots + 1e-9);
+      double a = 0.0, f = 0.0, d = 0.0;
+      if(buy)
+        {
+         a = last - step - 2.0 * hs;                           // bid when the ask reaches the next add level
+         if(!(canAdd && a > barrier)) { a = barrier; canAdd = false; }
+         d = tp - a;
+         f = (x <= a) ? 0.0 : ((d > 0) ? (x - a) / d : 1.0);
+        }
+      else
+        {
+         a = last + step + 2.0 * hs;                           // ask when the bid reaches the next add level
+         if(!(canAdd && a < barrier)) { a = barrier; canAdd = false; }
+         d = a - tp;
+         f = (x >= a) ? 0.0 : ((d > 0) ? (a - x) / d : 1.0);
+        }
+      res   += reach * f;
+      reach *= (1.0 - f);
+      if(!canAdd || reach <= 1e-12) break;
+      double fill = buy ? (last - step + slip) : (last + step - slip);
+      pv   += fill * lot;
+      lots += lot;
+      last  = fill;
+      n++;
+      double w = pv / lots;
+      tp = buy ? ND(w + tpd) : ND(w - tpd);                    // TryAddLayer: ND(newWavg +/- TP_Pips x 10 x point)
+      x  = a;
+     }
+   return res;
+  }
+
+//--- v7.02: P(the grid's shared TP is reached before its basket stop), logistic around the
+//    random-walk probability Pf = ProbRandomWalk (with the grid's own future adds).
+//    FLOOR: P < ProbMin; EDGE: logit(P) - logit(Pf) < -ProbEdge.
+//    On exit the side is latched and closed like a basket stop. Returns true when it fired.
+bool ProbExitSide(int k, ENUM_ORDER_TYPE type, int magic, double ancPx, long ancMs,
+                  double bid, double ask, long nowMs, double z, double trend, double lvol)
+  {
+   double tp = GridTP(magic);
+   if(tp <= 0) return false;                                  // no shared TP yet (HealTP restores it)
+   double barrier = StopPrice(type, ancPx);                  // BUY: bid level below; SELL: ask level above
+   double s = (k == 0) ? 1.0 : -1.0;
+   double x = 0, u = 0, v = 0;
+   if(k == 0) { x = bid; u = tp - x; v = x - barrier; }     // BUY grid: TP above the bid, stop below
+   else       { x = ask; u = x - tp; v = barrier - x; }     // SELL grid: TP below the ask, stop above
+   if(u <= 0 || v <= 0) return false;                        // TP or the basket stop is executing
+   double pf  = ProbRandomWalk(k, type, magic, bid, ask, barrier, tp);
+   if(pf < 0) return false;                                  // grid unreadable this tick
+   pf         = MathMax(1e-6, MathMin(1.0 - 1e-6, pf));
+   double lf  = MathLog(pf / (1.0 - pf));
+   double zs  = -s * z;                                      // stretch in favour of the grid
+   double ts  = s * trend;                                   // trend in favour of the grid
+   double age = MathLog(1.0 + MathMax(0.0, (double)(nowMs - ancMs)) / 60000.0);
+   double nl  = (double)(PosCount(magic) - 1);
+   double L   = lf + ProbB0 + ProbBZ * zs + ProbBTrend * ts + ProbBVol * lvol + ProbBAge * age + ProbBLayers * nl;
+   double P   = 1.0 / (1.0 + MathExp(-L));
+   bool floorHit = ((ProbExitMode == PROB_FLOOR || ProbExitMode == PROB_BOTH) && P < ProbMin);
+   bool edgeHit  = ((ProbExitMode == PROB_EDGE  || ProbExitMode == PROB_BOTH) && (L - lf) < -ProbEdge);
+   if(!floorHit && !edgeHit) return false;
+   double pip = 10.0 * g_point;
+   PrintFormat(">>> PROB EXIT %s: P=%.3f fair=%.3f dlogit=%.3f u=%.1fp v=%.1fp z=%.2f tr=%.2f lv=%.2f float=%.2f",
+               k == 0 ? "BUY" : "SELL", P, pf, L - lf, u / pip, v / pip, z, trend, lvol, FloatPnL(magic));
+   LatchSide(k);
+   CloseSide(k);
+   return true;
   }
 
 //--- account guards: daily loss (state persisted per server day), peak kill latch, session-end
@@ -1915,7 +2173,7 @@ void Panel()
    double wr = (total > 0) ? (100.0 * g_wins / total) : 0;
 
    string s = "";
-   s += "════ BayesianGrid v7.01 HF ════\n";
+   s += "════ BayesianGrid v7.02 HF ════\n";
    s += StringFormat("%s  |  %s\n", g_sym, TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES));
    s += StringFormat("Bal %.2f  Eq %.2f  AcctDD %.2f%%\n", bal, eq, acctDD);
    s += StringFormat("GridFloat $%.2f  GridDD %.2f%%/cap %.0f\n", gridFloat, gridDD, g_refCapital);
@@ -1938,6 +2196,8 @@ void Panel()
                         EnumToString(EntryTF), EntryMode == ENTRY_STRETCH ? "STRETCH" : "SYM", MaxHoldSec, StopPips,
                         bCount, g_effMaxLayers[0], sCount, g_effMaxLayers[1],
                         g_dayHalt ? "STOPPED" : "ok", g_kill ? "LATCHED" : "ok");
+   if(ProbExitMode != PROB_OFF)
+      s += StringFormat("ProbExit %s  Pmin %.2f  edge %.2f\n", EnumToString(ProbExitMode), ProbMin, ProbEdge);
    string guards = "";
    if(MaxEquityDD_Pct > 0)      guards += StringFormat("DDhalt %.0f%% ", MaxEquityDD_Pct);
    if(EmergencyCloseDD_Pct > 0) guards += StringFormat("Basket %.0f%% ", EmergencyCloseDD_Pct);

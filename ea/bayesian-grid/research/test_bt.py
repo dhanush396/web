@@ -95,7 +95,9 @@ def test_max_hold_time_stop():
     flat = (1.10000, 1.10000, 1.10000, 1.10000)
     p = bt.make_params(BaseLot=0.01, GridSpacingPts=100, TP_Pips=5, MaxLayers=5, MaxHoldMin=45, **ZERO_COST)
     r = bt.run(Synth([flat] * 50), p)
-    assert r["time_stops"] == 2 and r["grids_opened"] == 4, r  # 00:00 pair stopped at 00:45, re-opened at 00:45
+    # 00:00 pair stopped at 00:45. Like the EA (LatchSide blocks the entry block on that tick and the
+    # M15 bar's entry chance is used up), the sides re-open only on the next M15 bar (01:00, not in the data)
+    assert r["time_stops"] == 2 and r["grids_opened"] == 2, r
     assert abs(r["max_hold_min"] - 45.0) < 1e-9, r
 
 
@@ -243,6 +245,95 @@ def test_review_spread_change_crosses_stop():
     p = bt.make_params(BaseLot=0.01, GridSpacingPts=500, TP_Pips=50, MaxLayers=1, StopPips=1, **ZERO_COST)
     r = bt.run(sy, p)
     assert r["side_stops"] == 2, r  # BUY bid and SELL ask both crossed their 1-pip stops
+
+
+def _noise_bars(n, px=1.10000, amp=0.00001):
+    """n quiet warm-up bars alternating +-amp around px (features need sigma > 0)."""
+    bars = []
+    prev = px
+    for k in range(n):
+        c = px + (amp if k % 2 == 0 else -amp)
+        bars.append((prev, max(prev, c), min(prev, c), c))
+        prev = c
+    return bars
+
+
+def test_v702_prob_floor_exit_at_bar_open():
+    # both grids open at 1.10000 (TP 10, stop 10 pips). After a 5-pip drop the BUY grid is u=15 pips
+    # from TP and v=5 pips from its stop: P_fair = 5/20 = 0.25 < ProbMin 0.30 -> exit at the next open.
+    # The SELL grid (P_fair = 0.75) is kept. Zero coefficients: P = P_fair exactly.
+    bars = _noise_bars(200)
+    bars[0] = (1.10000, 1.10000, 1.10000, 1.10000)
+    bars += [(1.10000, 1.10000, 1.09950, 1.09950)] + [(1.09950, 1.09950, 1.09950, 1.09950)] * 4
+    kw = dict(BaseLot=0.01, GridSpacingPts=500, TP_Pips=10, MaxLayers=1, StopPips=10, ProbExitMode=1,
+              ProbMin=0.30, **ZERO_COST)
+    r = bt.run(_as_data(Synth(bars)), bt.make_params(**kw))
+    assert r["prob_exits"] == 1 and r["side_stops"] == 0, r
+    assert abs(r["final_balance"] - (1000 - 0.50)) < 1e-6, r["final_balance"]
+    # a positive intercept (the model says the odds are better than a random walk) keeps the grid
+    r = bt.run(_as_data(Synth(bars)), bt.make_params(**dict(kw, ProbB0=2.0)))
+    assert r["prob_exits"] == 0, r
+    # EDGE: a negative intercept beyond ProbEdge exits as soon as the features are valid
+    r = bt.run(_as_data(Synth(bars)), bt.make_params(**dict(kw, ProbExitMode=2, ProbB0=-0.5, ProbEdge=0.25)))
+    assert r["prob_exits"] >= 2, r
+
+
+def test_v702_prob_features_have_no_lookahead():
+    rng = np.random.default_rng(1)
+    c = 1.1 + np.cumsum(rng.normal(0, 0.0001, 3000))
+    o = np.concatenate([[c[0]], c[:-1]])
+    bars = [(o[i], max(o[i], c[i]) + 0.00005, min(o[i], c[i]) - 0.00005, c[i]) for i in range(3000)]
+    f1 = bt._prob_features(_as_data(Synth(bars)), 90, 240, 0.0001)
+    bars2 = list(bars)
+    bars2[2000] = (o[2000], o[2000] + 0.01, o[2000] - 0.01, o[2000] - 0.009)
+    f2 = bt._prob_features(_as_data(Synth(bars2)), 90, 240, 0.0001)
+    assert np.allclose(f1[:2001], f2[:2001], equal_nan=True)  # row i is known at bar i's open
+    assert not np.allclose(f1[2001], f2[2001])
+    assert np.isfinite(f1[500]).all()
+
+
+def test_v702_training_labels():
+    # BUY basket reaches its TP (label 1); the SELL basket hits its 10-pip stop (label 0)
+    bars = [(1.10000, 1.10000, 1.10000, 1.10000), (1.10000, 1.10100, 1.10000, 1.10100)]
+    p = bt.make_params(BaseLot=0.01, GridSpacingPts=500, TP_Pips=5, MaxLayers=1, StopPips=10,
+                       ProbRecord=100, **ZERO_COST)
+    r = bt.run(_as_data(Synth(bars)), p)
+    assert r["wins"] == 1 and r["side_stops"] == 1, r
+    assert list(r["prob_outcome"]) == [1.0, 0.0], r["prob_outcome"]
+    rec = r["prob_rec"]
+    assert rec.shape[0] == 2 and list(rec[:, 0]) == [0.0, 1.0], rec
+    assert abs(rec[0, 3] - 5) < 1e-6 and abs(rec[0, 4] - 10) < 1e-6 and abs(rec[0, 7] - 2 / 3) < 1e-9, rec[0]
+
+
+def test_v702_random_walk_probability_counts_future_adds():
+    # BUY L1 at 1.10000, TP 5 pips, next add 10 pips lower, stop 30 pips below L1, 2 layers (flat 0.01).
+    # Stage 1: (1.10000-1.09900)/(1.10050-1.09900) = 2/3. After the add at 1.09900 the TP drops to the new
+    # average 1.09950 + 5 pips = 1.10000: (1.09900-1.09700)/(1.10000-1.09700) = 2/3. P = 2/3 + 1/3*2/3 = 8/9.
+    p = bt.make_params(BaseLot=0.01, FlatLayers=5, LotIncrement=0, GridSpacingPts=100, TP_Pips=5, StopPips=30,
+                       MaxLayers=2, **ZERO_COST)
+    S = np.zeros(bt.NSTATE)
+    S[bt.N0] = 1; S[bt.L0] = 0.01; S[bt.PV0] = 1.1 * 0.01; S[bt.LAST0] = 1.1; S[bt.TP0] = 1.1005; S[bt.FIRST0] = 1.1
+    S[bt.EFFML0] = 2
+    S[bt.N1] = 1; S[bt.L1] = 0.01; S[bt.PV1] = 1.1 * 0.01; S[bt.LAST1] = 1.1; S[bt.TP1] = 1.0995; S[bt.FIRST1] = 1.1
+    S[bt.EFFML1] = 2
+    assert abs(bt._p_rw(S, 0, 1.1, 0.0, p) - 8 / 9) < 1e-9, bt._p_rw(S, 0, 1.1, 0.0, p)
+    assert abs(bt._p_rw(S, 1, 1.1, 0.0, p) - 8 / 9) < 1e-9, bt._p_rw(S, 1, 1.1, 0.0, p)
+    S[bt.EFFML0] = 1  # ladder full: plain gambler's ruin between the TP and the stop, 30/35
+    assert abs(bt._p_rw(S, 0, 1.1, 0.0, p) - 30 / 35) < 1e-9
+
+
+def test_v702_prob_exit_latches_side_for_the_bar():
+    # M1 entries: the BUY grid prob-exits at bar 201's open; like the EA (LatchSide), it re-opens on bar 202
+    bars = _noise_bars(200)
+    bars[0] = (1.10000, 1.10000, 1.10000, 1.10000)
+    bars += [(1.10000, 1.10000, 1.09950, 1.09950)] + [(1.09950, 1.09950, 1.09950, 1.09950)] * 4
+    p = bt.make_params(BaseLot=0.01, GridSpacingPts=500, TP_Pips=10, MaxLayers=1, StopPips=10, ProbExitMode=1,
+                       ProbMin=0.30, EntryTFMin=1, ProbRecord=1000, **ZERO_COST)
+    r = bt.run(_as_data(Synth(bars)), p)
+    assert r["prob_exits"] == 1, r
+    rec = r["prob_rec"]
+    new_buy = rec[(rec[:, 1] == 1) & (rec[:, 0] > 1)]
+    assert int(new_buy[0, 2]) == 203 and abs(new_buy[0, 6] - 1.0) < 1e-9, new_buy[:2]
 
 
 def _as_data(sy):

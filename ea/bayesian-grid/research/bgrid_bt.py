@@ -39,6 +39,9 @@ PARAM_NAMES = [
     "MaxHoldSec", "NoAddAfterSec", "StopPips", "MaxBasketRiskPct", "AddMinSec", "PeakKillPct",
     "EntryMode", "ZEntry", "ZEmaBars", "TrendTMax",
     "SpreadScale", "MktSlip",
+    # v7.02 probability exit (indices 60..): exit a side early only when P(TP before its stop) is down
+    "ProbExitMode", "ProbMin", "ProbEdge", "ProbB0", "ProbBZ", "ProbBTrend", "ProbBVol", "ProbBAge",
+    "ProbBLayers", "ProbVolLongBars", "ProbRecord",
 ]
 PI = {n: i for i, n in enumerate(PARAM_NAMES)}
 
@@ -57,6 +60,8 @@ EA_DEFAULTS = dict(
     MaxHoldSec=0, NoAddAfterSec=0, StopPips=0.0, MaxBasketRiskPct=0.0, AddMinSec=0, PeakKillPct=0.0,
     EntryMode=0, ZEntry=1.5, ZEmaBars=90, TrendTMax=2.0,
     SpreadScale=1.0, MktSlip=0,
+    ProbExitMode=0, ProbMin=0.30, ProbEdge=0.0, ProbB0=0.0, ProbBZ=0.0, ProbBTrend=0.0, ProbBVol=0.0,
+    ProbBAge=0.0, ProbBLayers=0.0, ProbVolLongBars=1440, ProbRecord=0,
 )
 
 # EURUSD spread multiplier by SERVER hour (NY-close time): thin after rollover and late
@@ -95,7 +100,8 @@ COMM, SWAP, LAYERS, MAXN, HITMAX, WORSTFLOAT, ADDBLOCK, TPPROFIT, STOPLOSS, GRID
 MINFREE_RATIO, SIDEWORST0, SIDEWORST1, WORSTSIDE = range(35, 39)
 START0, START1, DAYBAL, DAYHALT, TIMESTOPS, SESSCLOSE, DAYSTOPS, HOLDSUM, HOLDN, MAXHOLD = range(39, 49)
 FIRST0, FIRST1, EFFML0, EFFML1, LASTADD0, LASTADD1, SIDESTOPS, KILL, EQPEAK = range(49, 58)
-NSTATE = 58
+BID0, BID1, CLSB0, CLSB1, CLST0, CLST1, PROBEXITS, RECN = range(58, 66)
+NSTATE = 66
 
 STAT_NAMES = [
     "final_balance", "final_equity", "max_dd_pct", "max_dd_abs", "min_equity", "wins", "losses",
@@ -103,7 +109,7 @@ STAT_NAMES = [
     "layers_added", "max_layers_used", "grids_hit_max", "worst_float", "adds_blocked",
     "tp_profit", "stop_losses", "grids_opened", "worst_side_float",
     "time_stops", "session_closes", "daily_stops", "avg_hold_min", "max_hold_min",
-    "side_stops", "killed", "avg_hold_sec", "max_hold_sec",
+    "side_stops", "killed", "avg_hold_sec", "max_hold_sec", "prob_exits",
 ]
 
 
@@ -186,6 +192,12 @@ def _close_side(S, side, m, hs, p, t):
         S[HOLDN] += 1
         if hold > S[MAXHOLD]:
             S[MAXHOLD] = hold
+    if n > 0:  # training label: did this basket close at (or through) its TP?
+        S[CLSB0 + side] = S[BID0 + side]
+        if side == 0:
+            S[CLST0] = 1.0 if m - hs >= S[TP0] - 1e-9 else 0.0
+        else:
+            S[CLST1] = 1.0 if m + hs <= S[TP1] + 1e-9 else 0.0
     if side == 0:
         if S[N0] == 0:
             return 0.0
@@ -595,9 +607,142 @@ def _fit_layers(p, hs, eq):
 
 
 @njit(cache=True)
-def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
+def _flush_labels(S, outc):
+    """Store pending basket labels; returns a bit mask of the sides whose basket ended by a non-TP
+    exit since the last flush. Called just before the entry block, that is exactly the EA's latch:
+    a side closed by a stop / time / probability exit on this tick (g_sideFlat) cannot re-open on it."""
+    mask = 0
+    for sd in range(2):
+        if S[CLSB0 + sd] >= 0:
+            if outc.shape[0] > 0:
+                outc[int(S[CLSB0 + sd])] = S[CLST0 + sd]
+            if S[CLST0 + sd] < 0.5:
+                mask |= 1 << sd
+            S[CLSB0 + sd] = -1.0
+    return mask
+
+
+@njit(cache=True)
+def _p_rw(S, sd, m, hs, p):
+    """Random-walk probability that side sd reaches its TP before its L1-anchored stop, INCLUDING
+    the grid's own future adds: between the current TP (above, for a BUY grid) and the next add
+    trigger (below) a driftless price hits the TP first with probability (x-A)/(TP-A); reaching A adds
+    the next layer (fill at the trigger + slippage), which re-sets the TP from the new average, and
+    so on until the ladder (EFFML, MaxTotalLots) is full, after which the stop is the lower barrier.
+    Spread is held at its current value."""
+    point = p[37]
+    step = p[4] * point
+    stop_d = p[50] * 10.0 * point
+    slip = p[31] * point
+    tpd = p[5] * 10.0 * point
+    if sd == 0:
+        n = S[N0]; lots = S[L0]; pv = S[PV0]; last = S[LAST0]; tp = S[TP0]; other = S[L1]
+        x = m - hs
+        bar = S[FIRST0] - stop_d
+    else:
+        n = S[N1]; lots = S[L1]; pv = S[PV1]; last = S[LAST1]; tp = S[TP1]; other = S[L0]
+        x = m + hs
+        bar = S[FIRST1] + stop_d
+    effml = S[EFFML0 + sd]
+    res = 0.0
+    reach = 1.0
+    for _ in range(64):
+        if (sd == 0 and x >= tp) or (sd == 1 and x <= tp):
+            res += reach
+            break
+        lot = _lot_size(int(n) + 1, p)
+        can_add = n < effml and other + lots + lot <= p[7] + 1e-9
+        if sd == 0:
+            a = last - step - 2.0 * hs  # bid when the ask reaches the next add level
+            if not (can_add and a > bar):
+                a = bar
+                can_add = False
+            f = 0.0 if x <= a else (x - a) / (tp - a)
+        else:
+            a = last + step + 2.0 * hs  # ask when the bid reaches the next add level
+            if not (can_add and a < bar):
+                a = bar
+                can_add = False
+            f = 0.0 if x >= a else (a - x) / (a - tp)
+        res += reach * f
+        reach *= 1.0 - f
+        if not can_add or reach <= 1e-12:
+            break
+        fill = (last - step + slip) if sd == 0 else (last + step - slip)
+        pv += fill * lot
+        lots += lot
+        last = fill
+        n += 1
+        w = pv / lots
+        tp = np.round(((w + tpd) if sd == 0 else (w - tpd)) / point) * point
+        x = a
+    return res
+
+
+@njit(cache=True)
+def _prob_exits(S, i, m, hs, p, ti, pf, rec):
+    """v7.02 probability exit, evaluated at the open of each M1 bar (the EA: first tick of the bar).
+    P_fair = _p_rw: the random-walk probability of reaching the TP before the basket stop, with the
+    grid's own future adds; the model adds conditional terms in logit space from CLOSED-bar features.
+    FLOOR exits when P < ProbMin, EDGE when logit P - logit P_fair < -ProbEdge."""
+    stop_d = p[50] * 10.0 * p[37]
+    pip = 10.0 * p[37]
+    mode = int(p[60])
+    for sd in range(2):
+        nn = S[N0] if sd == 0 else S[N1]
+        if nn <= 0 or stop_d <= 0:
+            continue
+        if sd == 0:
+            x = m - hs
+            u = S[TP0] - x
+            v = x - (S[FIRST0] - stop_d)
+            sgn = 1.0
+            start = S[START0]
+        else:
+            x = m + hs
+            u = x - S[TP1]
+            v = (S[FIRST1] + stop_d) - x
+            sgn = -1.0
+            start = S[START1]
+        if u <= 0 or v <= 0:
+            continue
+        pfair = _p_rw(S, sd, m, hs, p)
+        if pfair < 1e-6:
+            pfair = 1e-6
+        if pfair > 1 - 1e-6:
+            pfair = 1 - 1e-6
+        age = (ti - start) / 60.0
+        if rec.shape[0] > 0 and S[RECN] < rec.shape[0]:
+            r = int(S[RECN])
+            rec[r, 0] = S[BID0 + sd]; rec[r, 1] = sgn; rec[r, 2] = i; rec[r, 3] = u / pip
+            rec[r, 4] = v / pip; rec[r, 5] = nn; rec[r, 6] = age; rec[r, 7] = pfair
+            rec[r, 8] = S[EFFML0 + sd]
+            S[RECN] += 1
+        if mode <= 0 or pf.shape[0] == 0:
+            continue
+        z = pf[i, 0]; tr = pf[i, 1]; lv = pf[i, 2]
+        if np.isnan(z) or np.isnan(tr) or np.isnan(lv):
+            continue
+        lf = np.log(pfair / (1.0 - pfair))
+        lg = (lf + p[63] + p[64] * (-sgn * z) + p[65] * (sgn * tr) + p[66] * lv
+              + p[67] * np.log(1.0 + age) + p[68] * (nn - 1.0))
+        pr = 1.0 / (1.0 + np.exp(-lg))
+        ex = False
+        if (mode == 1 or mode == 3) and pr < p[61]:
+            ex = True
+        if (mode == 2 or mode == 3) and lg - lf < -p[62]:
+            ex = True
+        if ex:
+            S[STOPLOSS] += _close_mkt(S, sd, m, hs, p, ti)
+            S[PROBEXITS] += 1
+
+
+@njit(cache=True)
+def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd, pf, rec, outc):
     n = t.shape[0]
     S = np.zeros(NSTATE)
+    S[CLSB0] = -1.0
+    S[CLSB1] = -1.0
     S[BAL] = p[24]
     S[PEAK] = p[24]
     S[MIN_EQ] = p[24]
@@ -687,10 +832,12 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
                     pre_news = True
         allow = not (in_news and p[21] > 0)
         # ---- move from previous close to this open
+        # (adds are deferred until after the bar-open exit checks, as in the EA's OnTick order:
+        #  V7GridExits -> account guards -> TryAddLayer -> entries)
         if ti - prev_t > 180:
-            _jump(S, o[i], hs, p, ti, allow, allow, refcap, hold_sec)
+            _jump(S, o[i], hs, p, ti, False, False, refcap, hold_sec)
         else:
-            _segment(S, prev_c, o[i], hs, p, ti, ti, allow, allow, refcap, hold_sec)
+            _segment(S, prev_c, o[i], hs, p, ti, ti, False, False, refcap, hold_sec)
         # ---- Friday flatten (EA returns early: no adds, no opens)
         if p[14] > 0 and dow == 5 and hour >= p[15]:
             if S[N0] + S[N1] > 0:
@@ -699,12 +846,16 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
                 S[FRICLOSE] += 1
             if npts > 0:
                 _build_path(wp, wt, o[i], h[i], l[i], c[i], npts)  # keep the RNG stream independent of Friday settings
+            _flush_labels(S, outc)  # Friday flatten is not a latch: the next session may re-open
             prev_c = c[i]
             prev_t = ti
             continue
         # ---- max holding time: close a side whose FIRST position is >= the hold limit old
         if hold_sec > 0:
             _time_stops(S, o[i], hs, p, ti, hold_sec)
+        # ---- v7.02 probability exit (and the training recorder) at the bar open
+        if p[60] > 0 or rec.shape[0] > 0:
+            _prob_exits(S, i, o[i], hs, p, ti, pf, rec)
         # ---- v7 peak-equity kill latch + daily loss limit (also re-checked at every waypoint)
         _acct_guards(S, o[i], hs, p, ti)
         if S[KILL] > 0 and S[N0] + S[N1] == 0:
@@ -732,6 +883,13 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
             if closed:
                 S[NEWSCLOSE] += 1
         # ---- new entry-timeframe bar (M15 in v6.12; M1/M5 for the scalper): open idle grids
+        # ---- deferred layer add at the open (at most one per side, at the open price)
+        step_px = p[4] * point
+        if allow and S[N0] > 0 and S[N0] < S[EFFML0] and _adds_ok(S, 0, p, ti) and o[i] + hs <= S[LAST0] - step_px:
+            _try_add(S, 0, o[i], hs, p, ti)
+        if allow and S[N1] > 0 and S[N1] < S[EFFML1] and _adds_ok(S, 1, p, ti) and o[i] - hs >= S[LAST1] + step_px:
+            _try_add(S, 1, o[i], hs, p, ti)
+        latched = _flush_labels(S, outc)
         m15 = ti // tf_sec
         if m15 != last_m15:
             last_m15 = m15
@@ -762,19 +920,21 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
                         want1 = sig[i] < 0
                     effml = _fit_layers(p, hs, eq)  # v7 pre-trade ladder fit to the risk budget
                     if effml >= 1:
-                        if want0 and S[N0] == 0 and S[L0] + S[L1] + lot1 <= p[7] + 1e-9:
+                        if want0 and (latched & 1) == 0 and S[N0] == 0 and S[L0] + S[L1] + lot1 <= p[7] + 1e-9:
                             px = o[i] + hs  # requested ask; the fill slips by MktSlip
                             _open(S, 0, px + mslip, lot1, p, ti)
                             S[TP0] = np.round((px + tpd) / point) * point  # EA sets TP from the request
                             S[EFFML0] = effml
+                            S[BID0] = S[GRIDS]
                             S[GRIDS] += 1
                             if effml <= 1:
                                 S[HITMAX] += 1
-                        if want1 and S[N1] == 0 and S[L0] + S[L1] + lot1 <= p[7] + 1e-9:
+                        if want1 and (latched & 2) == 0 and S[N1] == 0 and S[L0] + S[L1] + lot1 <= p[7] + 1e-9:
                             px = o[i] - hs
                             _open(S, 1, px - mslip, lot1, p, ti)
                             S[TP1] = np.round((px - tpd) / point) * point
                             S[EFFML1] = effml
+                            S[BID1] = S[GRIDS]
                             S[GRIDS] += 1
                             if effml <= 1:
                                 S[HITMAX] += 1
@@ -789,8 +949,10 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
                 _time_stops(S, wp[k + 1], hs, p, tk1, hold_sec)
             if p[53] > 0 or p[44] > 0:  # the EA checks these on every tick, flat or not
                 _acct_guards(S, wp[k + 1], hs, p, tk1)
+        _flush_labels(S, outc)
         prev_c = c[i]
         prev_t = ti
+    _flush_labels(S, outc)
     # final mark uses the last processed bar's spread
     a_, b_ = _lin(S, hs, cs)
     final_eq = S[BAL] + a_ * prev_c + b_
@@ -810,12 +972,13 @@ def run_core(t, o, h, l, c, p, hmap, news, rec_daily, sig, sprd):
     out[26] = S[MAXHOLD]
     out[27] = S[SIDESTOPS]; out[28] = S[KILL]
     out[29] = out[25] * 60.0; out[30] = out[26] * 60.0
+    out[31] = S[PROBEXITS]
     return out, d_eq, d_bal
 
 
 @njit(cache=True)
 def len_stats():
-    return 31
+    return 32
 
 
 @njit(cache=True)
@@ -914,6 +1077,8 @@ class Data:
         d.spread = self.spread[lo:hi] if self.spread.shape[0] else self.spread
         d.point = self.point
         d._sig = {}
+        d._root = getattr(self, "_root", None) or self
+        d._lo = getattr(self, "_lo", 0) + lo
         return d
 
     def stretch_signal(self, zentry, ema_bars, trend_tmax, pip):
@@ -940,6 +1105,33 @@ class Data:
         return s
 
 
+def _prob_features(data, ema_bars, vol_long, pip):
+    """v7.02 probability-exit features on CLOSED M1 bars, shifted one bar (row i = known at the
+    open of bar i): z (as the stretch entry), signed 60-bar trend t-stat, ln(sigma1/sigmaLong)."""
+    key = ("pf", int(ema_bars), int(vol_long))
+    if key in data._sig:
+        return data._sig[key]
+    root = getattr(data, "_root", None)
+    if root is not None:  # a slice: compute on the full history, then cut (no warm-up per slice)
+        f = _prob_features(root, ema_bars, vol_long, pip)[data._lo:data._lo + len(data.t)]
+        data._sig[key] = f
+        return f
+    import pandas as pd
+    c = pd.Series(data.c)
+    r1 = c.diff() / pip
+    v1 = (r1 ** 2).ewm(halflife=60, min_periods=120).mean()
+    vl = (r1 ** 2).ewm(halflife=float(vol_long), min_periods=120).mean()
+    sig1 = np.sqrt(v1)
+    z = (c - c.ewm(span=int(ema_bars), adjust=False).mean()) / pip / (sig1 * np.sqrt(15))
+    tr = r1.rolling(60).sum() / (sig1 * np.sqrt(60))
+    lv = 0.5 * np.log(v1 / vl)
+    f = np.column_stack([z.to_numpy(), tr.to_numpy(), lv.to_numpy()]).astype(np.float64)
+    f = np.vstack([np.full((1, 3), np.nan), f[:-1]])  # act on the NEXT bar's open: no lookahead
+    f[~np.isfinite(f)] = np.nan
+    data._sig[key] = f
+    return f
+
+
 def run(data, params, hours=ORIGINAL_HOURS, news=None, daily=False):
     if news is None:
         news = np.zeros(0)
@@ -948,9 +1140,17 @@ def run(data, params, hours=ORIGINAL_HOURS, news=None, daily=False):
         sig = data.stretch_signal(params[PI["ZEntry"]], params[PI["ZEmaBars"]], params[PI["TrendTMax"]],
                                   10.0 * params[PI["Point"]])
     sprd = getattr(data, "spread", np.zeros(0))
+    pf = np.zeros((0, 3))
+    if params[PI["ProbExitMode"]] > 0:
+        pf = _prob_features(data, params[PI["ZEmaBars"]], params[PI["ProbVolLongBars"]], 10.0 * params[PI["Point"]])
+    rec = np.zeros((0, 9))
+    outc = np.zeros(0)
+    if params[PI["ProbRecord"]] > 0:
+        rec = np.full((int(params[PI["ProbRecord"]]), 9), -1.0)  # column 0 = basket id, -1 = unused
+        outc = np.full(len(data.t) * 2 + 2, -1.0)
     stats, d_eq, d_bal = run_core(data.t, data.o, data.h, data.l, data.c, params,
                                   hour_map(hours), np.asarray(news, dtype=np.float64), daily,
-                                  sig, np.asarray(sprd, dtype=np.float64))
+                                  sig, np.asarray(sprd, dtype=np.float64), pf, rec, outc)
     res = dict(zip(STAT_NAMES, stats.tolist()))
     years = (data.t[-1] - data.t[0]) / (365.25 * 86400)
     b0 = params[PI["Balance"]]
@@ -964,4 +1164,8 @@ def run(data, params, hours=ORIGINAL_HOURS, news=None, daily=False):
     if daily:
         res["daily_equity"] = d_eq
         res["daily_balance"] = d_bal
+    if params[PI["ProbRecord"]] > 0:
+        nrec = int(min((rec[:, 0] >= 0).sum(), rec.shape[0]))
+        res["prob_rec"] = rec[:nrec] if nrec else rec[:0]
+        res["prob_outcome"] = outc[:int(res["grids_opened"])]
     return res

@@ -343,3 +343,112 @@ Multiplying per-trade probabilities, i.e. assuming independence, understates los
 - Conditional probability, P(reversal | stretch, session, volatility), is the right way to improve the algo. The stretch entry in v7 (`EntryMode = ENTRY_STRETCH`) is exactly that, and it is why the late-NY stretch configuration was the least-bad result.
 - It raises expected gross from about 0 to about +0.2 pip.
 - A 1–30 minute EURUSD grid becomes positive only if the conditional edge exceeds the all-in cost. That needs costs around 0.2–0.3 pip per round trip, or a signal about 3–4× stronger than any state found here.
+
+## 10. v7.02: no holding period, exit at TP or only when the probability is down
+
+You asked for three things:
+
+- No holding-period exit.
+- Every grid exits at its TP.
+- A grid exits early only when its probability of reaching TP has dropped.
+
+That is now built into both the EA and the simulator:
+
+- `MaxHoldSec = 0`, `CloseAtSessionEnd = false`.
+- A new **v7.02 Probability Exit** input group.
+
+Scripts:
+
+| Script | What it does |
+|---|---|
+| `research/prob_exit_fit.py` | Fits the probability model |
+| `research/prob_exit_eval.py` | Runs the backtests |
+| `research/results/prob_exit/` | Holds the results |
+
+### What "the probability is down" means, exactly
+
+At the open of every M1 bar, for each open grid, the EA computes **P = P(this grid reaches its TP before its stop)**:
+
+    logit P = logit P_rw + b0 + bZ·(stretch in favour) + bTrend·(60-min trend in favour)
+              + bVol·ln(σ1m/σlong) + bAge·ln(1+minutes open) + bLayers·(layers−1)
+
+**P_rw is the random-walk probability, including your grid's own future adds.** It is gambler's ruin chained over the ladder:
+
+- Between the TP and the next add level, a driftless price hits the TP first with probability (x−A)/(TP−A).
+- Reaching A adds the next layer. That moves the average and the TP closer, and the same calculation repeats.
+- Once the ladder is full, the stop is the lower barrier.
+
+With all coefficients at zero, P is exactly what a random walk would give your ladder.
+
+There are two exit rules:
+
+- **FLOOR** (`ProbMin`): exit when P < ProbMin. This is the literal "probability is down" rule.
+- **EDGE** (`ProbEdge`): exit when logit P − logit P_rw < −ProbEdge. The model must say the odds are *worse than a random walk*. Under a random walk, holding to TP has zero expected gross value, so this is the expected-value-consistent rule.
+
+**The stop (`StopPips`) is required.** It is the "lose" event in the probability. Without a stop, a random walk reaches the TP with probability 1. The real barrier is then your margin, and the expected time to TP is infinite.
+
+### The fitted model (2012–2016; 6.29 M decision points, 873 k baskets; SEs clustered by trading day)
+
+| Term | Coefficient | t |
+|---|---|---|
+| b0 | +0.035 | 1.8 |
+| Stretch in favour (zs) | **+0.085** | 8.5 |
+| Trend in favour (ts) | **+0.029** | 3.1 |
+| ln(σ1m/σlong) | −0.002 | −0.1 |
+| ln(1 + age) | −0.007 | −1.0 |
+| Layers − 1 | +0.005 | 0.9 |
+
+**The random walk alone is already calibrated.** Fitting logit P = a + c·logit P_rw gives a = 0.065 and c = 0.968; a perfect fit would be a = 0 and c = 1.
+
+On 2017–2020.05:
+
+- The fitted terms improve log-loss over the random walk by **0.0005%**, which is nothing.
+- Calibration deciles (model / random walk / observed): 0.389 / 0.373 / 0.385 … 0.818 / 0.815 / 0.822 … 0.962 / 0.963 / 0.962.
+
+The probability that a grid reaches its TP is what a random walk predicts for your ladder. Stretch and trend are statistically real but far too small to matter.
+
+A first version used v/(u+v) as the baseline, which ignores future adds. It appeared to beat the random walk by 3.5–4.8%. That gain was purely the ladder's mechanical effect: adds pull the TP closer. The adversarial review caught this (workflow `review-prob-exit-v702`).
+
+### Backtests: does exiting on probability beat holding to TP?
+
+Setup: your HF logic (M1 entries 01–23 h, news filter, 0.01 +0.01 ladder, 5 layers, 5% basket risk budget), with no time exit.
+
+Comparison 1: a fixed 0.01 ladder on a large balance, so every configuration trades the whole period. Vantage Raw ECN costs, stop 40 pips, **$ per year**:
+
+| Grid / TP | Period | Hold to TP (no early exit) | EDGE 0.25 | FLOOR 0.25 | FLOOR 0.40 | EDGE 0 | Old 5-min time stop |
+|---|---|---|---|---|---|---|---|
+| 2 / 1 | 2012–16 | −24,867 | −24,872 | −27,911 | −31,024 | −36,372 | −52,174 |
+| 2 / 1 | 2017–20 | −16,728 | −16,747 | −18,972 | −21,365 | −30,514 | −40,415 |
+| 5 / 3 | 2017–20 | −4,893 | −4,915 | −5,715 | −6,329 | −17,845 | −17,125 |
+| 7.5 / 5.3 | 2017–20 | −2,978 | −3,001 | −3,621 | −3,972 | −16,646 | −14,836 |
+| 15 / 8 | 2012–16 | −2,021 | −2,032 | −2,360 | −2,647 | −15,006 | −14,248 |
+| 15 / 8 | 2017–20 | **−1,177** | −1,169 | −1,396 | −1,472 | −15,058 | −13,863 |
+
+Averaged over all 12 grid/TP/stop cells in 2017–20:
+
+| Rule | Grids hitting TP | Avg hold | $ per grid |
+|---|---|---|---|
+| Hold to TP | 85.5% | 58 min | −$0.23 |
+| FLOOR 0.25 | 82.8% | — | −$0.25 |
+| 5-min time stop | 25% | — | — |
+
+Exit rules compared with holding to TP, across the 24 cell × period combinations, on real costs:
+
+- The FLOOR rules and EDGE 0 never earn more.
+- EDGE 0.25 differs in 4 cells, by about $10 a year. It fires on only 0.4% of grids, so it is effectively "hold to TP".
+
+Comparison 2: $100 on Vantage Raw ECN.
+
+- **0 of 192 runs end above $100.**
+- Every run bleeds until the 5% risk budget cannot fit one 0.01 layer, and then stops trading.
+- It stops at about $21, $41 or $81 for a 10, 20 or 40-pip stop.
+
+### Conclusion
+
+- **Doing what you asked works mechanically.** With no holding period, 85% of grids exit at TP on average over the 12 cells (54–97% depending on grid size and stop distance).
+- **It still loses.** The rest end at the stop with the full ladder on. Each grid also pays spread, commission and slippage, plus an overnight swap now that grids can be held overnight. The result is −$0.23 per grid per 0.01 ladder.
+- **"Exit when the probability is down" cannot fix that.** The probability of reaching TP is the random walk's. When P drops, the position is worth exactly its fair value, so exiting only adds the cost of the exit. That is why every FLOOR threshold does worse than simply holding to TP.
+- **Best setting:** if you run v7.02, use `ProbExitMode = PROB_EDGE`, `ProbEdge = 0.25` with the fitted coefficients. It is identical to holding to TP except in the rare minutes when the model genuinely sees worse-than-random odds. Read the `PROB EXIT` lines in the journal to see when it fires.
+- **The verdict on the money is unchanged.** The cost per round trip is larger than any edge the probability can find.
+
+Preset: `presets/BG_HF_v702_tp_or_prob_exit.set` uses grid 15 / TP 8 / stop 40 / 5 layers / 5% risk / EDGE 0.25 with the fitted coefficients. It is the least-bad cell, not a profitable one. Test it in your Vantage MT5 Strategy Tester with "Every tick based on real ticks".
