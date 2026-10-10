@@ -266,3 +266,80 @@ The slow late-NY stretch configuration from the in-sample search loses least: $1
 **Conclusion on Vantage:** even on the cheapest account ($6/lot + 0.13–0.2 pip ≈ 0.8 pip per round trip), costs are 3–6× the ~0.13–0.26 pip break-even of the best grid/TP cells.
 
 The decisive check is your own Vantage MT5 Strategy Tester: "Every tick based on real ticks", with your account's real spread, commission and swap.
+
+## 9. Probability view: can conditional probability make it better?
+
+Script: `research/prob_edge.py`. Results: `research/results/probability/`. Data: EURUSD M1. 2012–2016 is used to choose; 2017–2020.05 is never used to choose. All-in cost is Vantage Raw ECN, 0.8 pip per round trip.
+
+### Sample space of one basket (your production logic, HF mode)
+
+Ω = {TP hit, time stop / session / news close}. Payoffs are all-in, in $ per basket with a 0.01 start lot.
+
+| Grid / TP | Period | P(TP) | Avg TP win | Avg other exit | P(TP) needed to break even | E[basket] |
+|---|---|---|---|---|---|---|
+| 2 / 1 | 2012–16 | **74.4%** | +$0.070 | −$1.064 | **93.8%** | −$0.22 |
+| 2 / 1 | 2017–20 | 65.9% | +$0.057 | −$0.697 | 92.4% | −$0.20 |
+| 5 / 3 | 2012–16 | 31.6% | +$0.322 | −$0.355 | 52.5% | −$0.14 |
+| 5 / 3 | 2017–20 | 21.8% | +$0.291 | −$0.254 | 46.6% | −$0.14 |
+| 7.5 / 5.3 | 2012–16 | 12.6% | +$0.565 | −$0.234 | 29.3% | −$0.13 |
+| 7.5 / 5.3 | 2017–20 | 7.2% | +$0.536 | −$0.179 | 25.1% | −$0.13 |
+
+The break-even probability is p_be = L / (W + L). A 74% hit rate looks good, but at grid 2 / TP 1 the costs push p_be to about 94%.
+
+### Unconditional events: the random-walk benchmark
+
+Test one entry at every in-session M1 close, long and short, with news windows excluded. The events are:
+
+- **W:** +a pips before −b pips.
+- **L:** −b before +a.
+- **T:** neither within H minutes.
+
+For a price with no drift, gambler's ruin gives P(W | resolved) = b/(a+b). Optional stopping gives E[gross] = 0 for any a, b and H. EURUSD sits on that benchmark:
+
+| a / b / H | P(W \| resolved) 2012–16 | 2017–20 | Random walk b/(a+b) | Gross E (pips) 2012–16 / 2017–20 |
+|---|---|---|---|---|
+| 1 / 2 / 5m | 0.656 | 0.681 | 0.667 | −0.08 / −0.04 |
+| 3 / 5 / 30m | 0.639 | 0.652 | 0.625 | −0.02 / −0.00 |
+| 5.3 / 7.5 / 45m | 0.606 | 0.617 | 0.586 | −0.01 / +0.00 |
+
+Choosing grid size, TP or holding time only moves probability between W, L and T. Expectancy before cost stays at about 0. After cost it is −0.8 pip per trade. This is the probability version of "barriers don't create edge".
+
+### Conditional probability: the lever that does work
+
+Condition each trade on its state when it opens: z-stretch relative to the trade direction, session, volatility tercile, and 60-minute trend. This gives 134 cells per bracket.
+
+**Fading a stretch has a real, stable conditional edge.** In-sample and out-of-sample have the same sign, and the effect mirrors when you trade with the stretch:
+
+| Bracket | Trade fades a 0.5–1.5σ stretch: gross 2012–16 / 2017–20 | Trade follows the stretch: gross 2012–16 / 2017–20 |
+|---|---|---|
+| 1 / 2 / 5m | +0.03 / +0.04 pip | −0.22 / −0.14 pip |
+| 3 / 5 / 5m | +0.18 / +0.11 pip | −0.22 / −0.13 pip |
+| 3 / 5 / 30m | +0.27 / +0.18 pip | −0.29 / −0.18 pip |
+| 5.3 / 7.5 / 45m | +0.34 / +0.20 pip | −0.33 / −0.20 pip |
+
+**It does not pay 0.8 pip.**
+
+- Only 7 of 670 cells were net-positive in 2012–16.
+- Pooled out of sample, they lose −0.37 and −0.46 pip per trade (gross +0.43 and +0.34).
+- The best single in-sample cell (01–05, low vol, trend >2, gross +1.28) dropped to +0.62 gross / −0.18 net.
+
+The conditional edge is about +0.1 to +0.3 pip. Break-even needs an all-in cost of about 0.2–0.3 pip. Vantage's commission alone is 0.6 pip.
+
+### Independence: losses cluster
+
+Run consecutive, non-overlapping trades for each bracket:
+
+| Bracket | P(L) | P(L \| previous L) | 5-loss streak observed | If independent, P(L)^5 |
+|---|---|---|---|---|
+| 3 / 5 / 5m, 2012–16 | 0.147 | 0.250 | 0.0011 | 0.0001 (**11× lower**) |
+| 3 / 5 / 5m, 2017–20 | 0.092 | 0.213 | 0.0006 | 0.00001 |
+| 1 / 2 / 5m, 2017–20 | 0.294 | 0.331 | 0.0052 | 0.0022 (2.4× lower) |
+| 5.3 / 7.5 / 45m, 2017–20 | 0.303 | 0.346 | 0.0056 | 0.0026 (2.2× lower) |
+
+Multiplying per-trade probabilities, i.e. assuming independence, understates loss streaks by 2–11×. It therefore understates ruin, and grid layers make this worse because they add size into the streak. Use the complement rule on the real streak frequency instead: P(at least one ruin in N baskets) = 1 − (1 − q)^N, which goes to 1 as N grows.
+
+**Conclusion.**
+
+- Conditional probability, P(reversal | stretch, session, volatility), is the right way to improve the algo. The stretch entry in v7 (`EntryMode = ENTRY_STRETCH`) is exactly that, and it is why the late-NY stretch configuration was the least-bad result.
+- It raises expected gross from about 0 to about +0.2 pip.
+- A 1–30 minute EURUSD grid becomes positive only if the conditional edge exceeds the all-in cost. That needs costs around 0.2–0.3 pip per round trip, or a signal about 3–4× stronger than any state found here.
